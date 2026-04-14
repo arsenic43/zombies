@@ -1,0 +1,599 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CoHoMa 4 — Formulaire</title>
+<link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root, [data-theme="dark"] {
+    --bg:#0a0c10;--surface:#111318;--surface2:#181c24;--surface3:#1e2330;--border:#232733;
+    --accent:#3d7fff;--text:#e8eaf0;--text-muted:#6b7185;--text-dim:#9196a8;
+    --green:#00e5a0;--red:#ff5c57;--yellow:#ffc947;--radius:10px;--radius-sm:6px;
+  }
+  [data-theme="light"] {
+    --bg:#f0f2f5;--surface:#ffffff;--surface2:#f7f8fa;--surface3:#ebedf2;--border:#d5d9e2;
+    --accent:#2563eb;--text:#1a1d26;--text-muted:#5c6272;--text-dim:#3d4455;
+    --green:#059669;--red:#dc2626;--yellow:#d97706;--radius:10px;--radius-sm:6px;
+  }
+  [data-theme="light"] body::before { background-image:linear-gradient(rgba(37,99,235,0.04) 1px,transparent 1px),linear-gradient(90deg,rgba(37,99,235,0.04) 1px,transparent 1px) }
+  [data-theme="light"] #toast { background:#fff;box-shadow:0 8px 32px rgba(0,0,0,.12) }
+
+  .theme-toggle{background:var(--surface2);border:1px solid var(--border);border-radius:99px;width:42px;height:26px;position:relative;cursor:pointer;transition:all .2s;padding:0;display:flex;align-items:center;justify-content:center;flex-shrink:0}
+  .theme-toggle::after{content:'☀️';position:absolute;left:3px;top:50%;transform:translateY(-50%);width:20px;height:20px;border-radius:50%;background:var(--surface3);display:flex;align-items:center;justify-content:center;font-size:11px;transition:all .3s cubic-bezier(.34,1.56,.64,1);line-height:1}
+  [data-theme="dark"] .theme-toggle::after, :root:not([data-theme="light"]) .theme-toggle::after{content:'🌙';left:calc(100% - 23px)}
+  .theme-toggle:hover{border-color:var(--accent)}
+  *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--bg);color:var(--text);font-family:'DM Mono',monospace;font-size:13px;min-height:100vh;overflow-x:hidden}
+  body::before{content:'';position:fixed;inset:0;background-image:linear-gradient(rgba(61,127,255,0.04) 1px,transparent 1px),linear-gradient(90deg,rgba(61,127,255,0.04) 1px,transparent 1px);background-size:40px 40px;pointer-events:none;z-index:0}
+  .app{position:relative;z-index:1;max-width:1140px;margin:0 auto;padding:32px 24px 80px}
+
+  header{display:flex;align-items:flex-start;justify-content:space-between;gap:18px;margin-bottom:36px;padding-bottom:24px;border-bottom:1px solid var(--border)}
+  .logo-badge{display:inline-flex;align-items:center;gap:6px;font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--accent);background:rgba(61,127,255,.08);border:1px solid rgba(61,127,255,.2);padding:4px 10px;border-radius:99px;margin-bottom:6px}
+  .logo-badge::before{content:'';width:6px;height:6px;border-radius:50%;background:var(--accent);animation:pulse 2s infinite}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
+  h1{font-family:'Syne',sans-serif;font-size:28px;font-weight:800;letter-spacing:-.02em}
+  h1 span{color:var(--accent)}
+  .subtitle{color:var(--text-muted);font-size:12px;margin-top:6px;max-width:720px;line-height:1.6}
+  .header-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap;justify-content:flex-end}
+
+  .layout{display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:20px;align-items:start}
+  @media(max-width:930px){.layout{grid-template-columns:1fr}}
+
+  .card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);overflow:visible}
+  .card+.card{margin-top:16px}
+  .card-header{padding:14px 20px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:10px;border-radius:var(--radius) var(--radius) 0 0}
+  .card-header-icon{width:28px;height:28px;border-radius:var(--radius-sm);display:flex;align-items:center;justify-content:center;font-size:14px}
+  .icon-blue{background:rgba(61,127,255,.12)}.icon-green{background:rgba(0,229,160,.10)}.icon-yellow{background:rgba(255,201,71,.10)}
+  .card-title{font-family:'Syne',sans-serif;font-weight:700;font-size:13px;text-transform:uppercase;letter-spacing:.08em}
+  .card-body{padding:20px}
+
+  .field-row{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px}
+  .field-row.full{grid-template-columns:1fr}
+  .field-row.three{grid-template-columns:1fr 1fr 1fr}
+  @media(max-width:700px){.field-row,.field-row.three{grid-template-columns:1fr}}
+  .field{display:flex;flex-direction:column;gap:5px}
+  label{font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--text-muted);font-family:'Syne',sans-serif;font-weight:600}
+  label .req{color:var(--accent);margin-left:2px}
+  input[type=text],input[type=email],input[type=tel],textarea{background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text);font-family:'DM Mono',monospace;font-size:12px;padding:9px 12px;outline:none;width:100%;transition:border-color .15s,box-shadow .15s}
+  input:focus,textarea:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(61,127,255,.12)}
+  input::placeholder,textarea::placeholder{color:var(--text-muted);opacity:.6}
+  textarea{resize:vertical;min-height:92px}
+
+  .org-list{display:flex;flex-direction:column;gap:10px}
+  .org-empty{padding:18px;border:1px dashed var(--border);border-radius:var(--radius-sm);text-align:center;color:var(--text-muted);font-size:11px}
+  .org-row{display:grid;grid-template-columns:minmax(0,1.4fr) minmax(0,1fr) 36px;gap:8px;align-items:end;padding:12px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--surface2)}
+  @media(max-width:700px){.org-row{grid-template-columns:1fr}}
+  .btn{display:inline-flex;align-items:center;gap:6px;padding:9px 16px;border-radius:var(--radius-sm);font-family:'Syne',sans-serif;font-weight:700;font-size:11px;letter-spacing:.08em;text-transform:uppercase;border:none;cursor:pointer;transition:all .15s;white-space:nowrap}
+  .btn-primary{background:var(--accent);color:white}.btn-primary:hover{background:#5b94ff;transform:translateY(-1px);box-shadow:0 4px 16px rgba(61,127,255,.3)}
+  .btn-secondary{background:transparent;color:var(--text-dim);border:1px solid var(--border)}.btn-secondary:hover{border-color:var(--accent);color:var(--accent)}
+  .btn-ghost{background:transparent;color:var(--text-muted);border:1px solid var(--border);padding:0;width:36px;height:36px;justify-content:center}
+  .btn-ghost:hover{color:var(--red);border-color:rgba(255,92,87,.35);background:rgba(255,92,87,.08)}
+  .btn-save{background:var(--green);color:#000;font-weight:700;width:100%;justify-content:center;padding:13px;font-size:12px}
+  .btn-save:hover{background:#00fdb3;box-shadow:0 4px 20px rgba(0,229,160,.3);transform:translateY(-1px)}
+  .btn-add-inline{margin-top:12px}
+
+  .sidebar-sticky{position:sticky;top:20px;display:flex;flex-direction:column;gap:14px}
+  .stats-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+  .stat-box{background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius-sm);padding:16px 12px;text-align:center}
+  .stat-num{font-family:'Syne',sans-serif;font-size:40px;font-weight:800;line-height:1}
+  .sn-blue{color:var(--accent)}.sn-green{color:var(--green)}
+  .stat-label{font-size:9px;text-transform:uppercase;letter-spacing:.1em;color:var(--text-muted);margin-top:6px;line-height:1.4}
+  .save-status{display:flex;align-items:center;gap:8px;padding:10px 14px;border-radius:var(--radius-sm);border:1px solid var(--border);background:var(--surface2);font-size:11px;color:var(--text-muted);transition:all .3s}
+  .save-status.saved{border-color:rgba(0,229,160,.3);color:var(--green);background:rgba(0,229,160,.05)}
+  .save-dot{width:6px;height:6px;border-radius:50%;background:var(--border);flex-shrink:0;transition:background .3s}
+  .save-status.saved .save-dot{background:var(--green);box-shadow:0 0 6px rgba(0,229,160,.5)}
+  .page-save{margin-top:18px}
+  .page-save-actions{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+  @media(max-width:700px){.page-save-actions{grid-template-columns:1fr}}
+
+  #toast{position:fixed;bottom:20px;right:20px;background:var(--surface2);border:1px solid var(--border);color:var(--text);padding:12px 16px;border-radius:var(--radius-sm);display:flex;gap:8px;align-items:center;z-index:1000;transform:translateY(120px);opacity:0;transition:all .25s}
+  #toast.show{transform:translateY(0);opacity:1}
+  #toast.success{border-color:rgba(0,229,160,.25)} #toast.error{border-color:rgba(255,92,87,.25)}
+
+  .custom-toggle{width:42px;height:24px;background:var(--surface3);border:1px solid var(--border);border-radius:99px;position:relative;display:inline-block;transition:all .2s;flex-shrink:0;cursor:pointer}
+  .custom-toggle::after{content:'';position:absolute;left:3px;top:50%;transform:translateY(-50%);width:18px;height:18px;border-radius:50%;background:var(--text-muted);transition:all .25s cubic-bezier(.34,1.56,.64,1)}
+  .custom-toggle.active{background:rgba(61,127,255,.15);border-color:var(--accent)}
+  .custom-toggle.active::after{left:calc(100% - 21px);background:var(--accent)}
+
+  .contacts-list{display:flex;flex-direction:column;gap:14px}
+  .contact-block{border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--surface2);padding:16px;position:relative}
+  .contact-block-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;padding-bottom:10px;border-bottom:1px solid var(--border)}
+  .contact-block-title{font-family:'Syne',sans-serif;font-weight:700;font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:var(--accent)}
+  .contact-empty{padding:18px;border:1px dashed var(--border);border-radius:var(--radius-sm);text-align:center;color:var(--text-muted);font-size:11px}
+</style>
+</head>
+<body>
+<div class="app">
+  <header>
+    <div>
+      <h1 style="font-size:48px;letter-spacing:-.03em"><span>COHOMA 4</span></h1>
+    </div>
+    <div class="header-actions">
+      <button class="theme-toggle" onclick="toggleTheme()" title="Mode sombre / clair" aria-label="Basculer le thème"></button>
+      <button class="btn btn-save" style="width:auto;padding:9px 16px;font-size:11px" onclick="sauvegarderJSON()">Sauvegarder JSON</button>
+      <button class="btn btn-secondary" onclick="ouvrirImportJSON()">Importer JSON</button>
+      <button class="btn btn-secondary" onclick="resetForm()">Réinitialiser</button>
+      <input type="file" id="jsonImportInput" accept=".json,application/json" onchange="importerJSON(event)" style="display:none">
+    </div>
+  </header>
+
+  <div class="layout">
+    <div>
+      <div class="card">
+        <div class="card-header">
+          <div class="card-header-icon icon-blue">👥</div>
+          <span class="card-title">Équipe</span>
+        </div>
+        <div class="card-body">
+          <div class="toggle-row" style="display:flex;align-items:center;gap:12px;margin-bottom:16px;padding-bottom:14px;border-bottom:1px solid var(--border)">
+            <label style="margin:0;cursor:pointer;display:flex;align-items:center;gap:10px;text-transform:none;font-size:12px;letter-spacing:0;color:var(--text);font-family:'DM Mono',monospace">
+              <input type="checkbox" id="chkDejaParticipe" onchange="toggleDejaParticipe()" style="display:none">
+              <span class="custom-toggle" id="toggleDeja"></span>
+              J'ai déjà participé à CoHoMa
+            </label>
+          </div>
+          <div class="field-row full" id="rowNomEquipe" style="display:none">
+            <div class="field">
+              <label>Nom de l'équipe</label>
+              <input type="text" id="txtNomEquipe" placeholder="Nom de votre équipe">
+            </div>
+          </div>
+          <div class="field-row full">
+            <div class="field">
+              <label>Nom de l'entité <span class="req">*</span></label>
+              <input type="text" id="txtEntitePrincipale" placeholder="Entreprise, laboratoire, université...">
+            </div>
+          </div>
+          <div class="field-row full">
+            <div class="field">
+              <label>Type d'entité <span class="req">*</span></label>
+              <input type="text" id="txtTypeEntite" placeholder="Entreprise, laboratoire, université, association étudiante...">
+            </div>
+          </div>
+          <div class="field-row full">
+            <div class="field">
+              <label>Secteur d'activité <span class="req">*</span></label>
+              <input type="text" id="txtSecteurActivite" placeholder="Défense, aérospatial, robotique, recherche académique...">
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <div class="card-header-icon icon-yellow">📇</div>
+          <span class="card-title">Points de Contact</span>
+        </div>
+        <div class="card-body">
+          <div id="contactsList" class="contacts-list"></div>
+          <button class="btn btn-primary btn-add-inline" type="button" onclick="ajouterContact()">+ Ajouter un contact</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="sidebar-sticky">
+      <div class="card">
+        <div class="card-header">
+          <div class="card-header-icon icon-yellow">📊</div>
+          <span class="card-title">Récapitulatif</span>
+        </div>
+        <div class="card-body">
+          <div class="stat-box" style="text-align:center">
+            <div class="stat-num sn-blue" id="statChamps">0/3</div>
+            <div class="stat-label">Champs requis remplis</div>
+          </div>
+        </div>
+      </div>
+      <div class="save-status" id="saveStatus">
+        <div class="save-dot"></div>
+        <span id="saveStatusText">Aucune sauvegarde</span>
+      </div>
+      <div class="card">
+        <div class="card-header">
+          <div class="card-header-icon icon-blue">ℹ</div>
+          <span class="card-title">Instructions</span>
+        </div>
+        <div class="card-body" style="font-size:11px;color:var(--text-dim);line-height:1.8">
+          <p>1. Renseignez l'identité de l'équipe et son entité.</p>
+          <p>2. Complétez le point de contact.</p>
+          <p>3. Exportez en <code style="color:var(--accent)">JSON</code> ou importez un brouillon existant.</p>
+          <p>4. Utilisez <span style="color:var(--green);font-weight:600">Préparer l'envoi</span> pour ouvrir un message vers <code style="color:var(--accent)">stat-innov_choma.trait.fct@intradef.gouv.fr</code> avec le fichier prêt à joindre.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="page-save">
+    <div class="page-save-actions">
+      <button class="btn btn-save" onclick="sauvegarderJSON()">Sauvegarder en JSON</button>
+      <button class="btn btn-secondary" onclick="envoyerFormulaire()">Préparer l'envoi</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast"><span id="toastIcon"></span> <span id="toastMsg"></span></div>
+
+<script>
+const REQUIRED_FIELD_IDS = [
+  'txtEntitePrincipale',
+  'txtTypeEntite',
+  'txtSecteurActivite',
+];
+
+const CONTACT_FIELDS = ['nom','prenom','dateNaissance','lieuNaissance','organisme','fonction','email','telephone'];
+
+let contactCounter = 0;
+
+function contactBlockHTML(item = {}, idx){
+  return `
+    <div class="contact-block" data-contact-idx="${idx}">
+      <div class="contact-block-header">
+        <span class="contact-block-title">Contact ${idx + 1}</span>
+        <button class="btn btn-ghost" type="button" onclick="supprimerContact(this)" title="Supprimer">&#10005;</button>
+      </div>
+      <div class="field-row">
+        <div class="field">
+          <label>Nom <span class="req">*</span></label>
+          <input type="text" class="ct-nom" placeholder="Nom" value="${escapeHtml(item.nom)}">
+        </div>
+        <div class="field">
+          <label>Pr&eacute;nom <span class="req">*</span></label>
+          <input type="text" class="ct-prenom" placeholder="Pr&eacute;nom" value="${escapeHtml(item.prenom)}">
+        </div>
+      </div>
+      <div class="field-row">
+        <div class="field">
+          <label>Date de naissance</label>
+          <input type="date" class="ct-dateNaissance" value="${escapeHtml(item.dateNaissance)}" style="background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text);font-family:'DM Mono',monospace;font-size:12px;padding:9px 12px;outline:none;width:100%">
+        </div>
+        <div class="field">
+          <label>Lieu de naissance</label>
+          <input type="text" class="ct-lieuNaissance" placeholder="Ville, pays" value="${escapeHtml(item.lieuNaissance)}">
+        </div>
+      </div>
+      <div class="field-row">
+        <div class="field">
+          <label>Organisme de rattachement <span class="req">*</span></label>
+          <input type="text" class="ct-organisme" placeholder="Structure du contact" value="${escapeHtml(item.organisme)}">
+        </div>
+        <div class="field">
+          <label>Fonction <span class="req">*</span></label>
+          <input type="text" class="ct-fonction" placeholder="Fonction ou poste" value="${escapeHtml(item.fonction)}">
+        </div>
+      </div>
+      <div class="field-row">
+        <div class="field">
+          <label>Adresse mail <span class="req">*</span></label>
+          <input type="email" class="ct-email" placeholder="prenom.nom@organisme.fr" value="${escapeHtml(item.email)}">
+        </div>
+        <div class="field">
+          <label>T&eacute;l&eacute;phone <span class="req">*</span></label>
+          <input type="tel" class="ct-telephone" placeholder="+33..." value="${escapeHtml(item.telephone)}">
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function getContactsContainer(){ return document.getElementById('contactsList'); }
+
+function ajouterContact(item = {}){
+  const container = getContactsContainer();
+  if(!container) return;
+  const empty = container.querySelector('.contact-empty');
+  if(empty) empty.remove();
+  const idx = container.querySelectorAll('.contact-block').length;
+  container.insertAdjacentHTML('beforeend', contactBlockHTML(item, idx));
+  updateStats();
+}
+
+function supprimerContact(btn){
+  const block = btn?.closest('.contact-block');
+  if(block) block.remove();
+  reindexContacts();
+  ensureContactsPlaceholder();
+  updateStats();
+}
+
+function reindexContacts(){
+  const blocks = document.querySelectorAll('.contact-block');
+  blocks.forEach((b, i) => {
+    b.setAttribute('data-contact-idx', i);
+    b.querySelector('.contact-block-title').textContent = 'Contact ' + (i + 1);
+  });
+}
+
+function ensureContactsPlaceholder(){
+  const container = getContactsContainer();
+  if(!container) return;
+  if(container.querySelectorAll('.contact-block').length) return;
+  container.innerHTML = '<div class="contact-empty">Aucun contact renseign&eacute;. Ajoutez au moins un contact.</div>';
+}
+
+function collectContacts(){
+  return [...document.querySelectorAll('.contact-block')].map(block => {
+    const obj = {};
+    CONTACT_FIELDS.forEach(f => { obj[f] = block.querySelector('.ct-' + f)?.value.trim() || ''; });
+    return obj;
+  });
+}
+
+function setContacts(items){
+  const container = getContactsContainer();
+  if(!container) return;
+  container.innerHTML = '';
+  const safe = Array.isArray(items) ? items.filter(Boolean) : [];
+  if(!safe.length){ ensureContactsPlaceholder(); updateStats(); return; }
+  safe.forEach(item => ajouterContact(item));
+  updateStats();
+}
+
+function toggleDejaParticipe(){
+  const chk = document.getElementById('chkDejaParticipe');
+  const row = document.getElementById('rowNomEquipe');
+  const toggle = document.getElementById('toggleDeja');
+  if(chk.checked){
+    row.style.display = '';
+    toggle.classList.add('active');
+  } else {
+    row.style.display = 'none';
+    toggle.classList.remove('active');
+    document.getElementById('txtNomEquipe').value = '';
+  }
+  updateStats();
+}
+
+function toStr(v){ return v == null ? '' : String(v); }
+
+function escapeHtml(v){
+  return toStr(v)
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;');
+}
+
+function updateStats(){
+  const filledEquipe = REQUIRED_FIELD_IDS.filter(id => document.getElementById(id)?.value.trim()).length;
+  const dejaParticipe = document.getElementById('chkDejaParticipe')?.checked;
+  const nomEquipeRempli = dejaParticipe && document.getElementById('txtNomEquipe')?.value.trim() ? 1 : 0;
+  const nomEquipeTotal = dejaParticipe ? 1 : 0;
+  const contacts = collectContacts();
+  const contactReqFields = ['nom','prenom','organisme','fonction','email','telephone'];
+  let filledContacts = 0;
+  let totalContacts = 0;
+  contacts.forEach(c => {
+    contactReqFields.forEach(f => { totalContacts++; if(c[f]) filledContacts++; });
+  });
+  const total = REQUIRED_FIELD_IDS.length + nomEquipeTotal + totalContacts;
+  const filled = filledEquipe + nomEquipeRempli + filledContacts;
+  document.getElementById('statChamps').textContent = `${filled}/${total}`;
+}
+
+function ouvrirImportJSON(){
+  const input = document.getElementById('jsonImportInput');
+  if(!input) return;
+  input.value = '';
+  input.click();
+}
+
+function importerJSON(event){
+  const input = event?.target;
+  const file = input?.files?.[0];
+  if(!file) return;
+
+  const reader = new FileReader();
+  reader.onload = () => {
+    try {
+      const data = JSON.parse(reader.result);
+      chargerDepuisJSON(data, file.name);
+    } catch (e) {
+      console.error(e);
+      toast('Fichier JSON invalide', 'error');
+    } finally {
+      input.value = '';
+    }
+  };
+  reader.onerror = () => {
+    toast('Impossible de lire le fichier', 'error');
+    input.value = '';
+  };
+  reader.readAsText(file, 'utf-8');
+}
+
+function chargerDepuisJSON(data, sourceName = ''){
+  if(!data || typeof data !== 'object'){
+    toast('Structure JSON invalide', 'error');
+    return;
+  }
+
+  const equipe = data.equipe || data.team || {};
+  const pointContact = data.pointContact || data.contact || {};
+
+  document.getElementById('txtNomEquipe').value = toStr(equipe.nom ?? equipe.nomEquipe);
+  document.getElementById('txtEntitePrincipale').value = toStr(equipe.entitePrincipale ?? equipe.nomEntitePrincipale);
+  document.getElementById('txtTypeEntite').value = toStr(equipe.typeEntite);
+  document.getElementById('txtSecteurActivite').value = toStr(equipe.secteurActivite);
+  const dejaParticipe = !!equipe.dejaParticipe;
+  document.getElementById('chkDejaParticipe').checked = dejaParticipe;
+  if(equipe.dejaParticipe){
+    document.getElementById('chkDejaParticipe').checked = true;
+    document.getElementById('txtNomEquipe').value = toStr(equipe.nomEquipe ?? equipe.nom);
+  }
+  toggleDejaParticipe();
+
+  // Contacts : support ancien format (objet unique) et nouveau (tableau)
+  let contacts = data.contacts || data.pointsContact || [];
+  if(!Array.isArray(contacts)){
+    const pc = data.pointContact || data.contact || contacts;
+    if(pc && typeof pc === 'object') contacts = [pc]; else contacts = [];
+  }
+  // Normaliser les anciens noms de champs
+  contacts = contacts.map(c => ({
+    nom: c.nom || '',
+    prenom: c.prenom || '',
+    dateNaissance: c.dateNaissance || '',
+    lieuNaissance: c.lieuNaissance || '',
+    organisme: c.organisme || c.organismeRattachement || '',
+    fonction: c.fonction || '',
+    email: c.email || c.adresseMail || '',
+    telephone: c.telephone || '',
+  }));
+  setContacts(contacts);
+
+  const s = document.getElementById('saveStatus');
+  s.classList.remove('saved');
+  document.getElementById('saveStatusText').textContent = sourceName ? `Importé - ${sourceName}` : 'Données importées';
+  updateStats();
+  toast(sourceName ? `Fichier "${sourceName}" importé` : 'Fichier importé', 'success');
+}
+
+function preparerExportJSON(){
+  const missing = REQUIRED_FIELD_IDS
+    .map(id => document.getElementById(id))
+    .filter(el => !el || !el.value.trim());
+  if(missing.length){
+    toast('Veuillez renseigner tous les champs obligatoires', 'error');
+    return null;
+  }
+  const contacts = collectContacts();
+  if(!contacts.length){
+    toast('Ajoutez au moins un point de contact', 'error');
+    return null;
+  }
+  const contactReqFields = ['nom','prenom','organisme','fonction','email','telephone'];
+  const contactIncomplet = contacts.some(c => contactReqFields.some(f => !c[f]));
+  if(contactIncomplet){
+    toast('Veuillez renseigner tous les champs obligatoires des contacts', 'error');
+    return null;
+  }
+
+  const nomEquipe = document.getElementById('txtNomEquipe').value.trim();
+  const payload = {
+    meta: {
+      formulaire: 'CoHoMa 4',
+      source: 'forumulairecohoma.docx',
+      version: '1.0',
+      genereLe: new Date().toLocaleString('fr-FR'),
+    },
+    equipe: {
+      nom: nomEquipe,
+      entitePrincipale: document.getElementById('txtEntitePrincipale').value.trim(),
+      typeEntite: document.getElementById('txtTypeEntite').value.trim(),
+      secteurActivite: document.getElementById('txtSecteurActivite').value.trim(),
+      dejaParticipe: document.getElementById('chkDejaParticipe').checked,
+      nomEquipe: document.getElementById('txtNomEquipe').value.trim() || null,
+    },
+    contacts: collectContacts(),
+  };
+
+  const nom = `cohoma4_${nomEquipe.replace(/[^a-zA-Z0-9]/g, '_')}_${new Date().toISOString().slice(0,10)}.json`;
+  return { payload, nom, nomEquipe };
+}
+
+function telechargerJSON(payload, nom){
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([JSON.stringify(payload, null, 2)], { type:'application/json' }));
+  a.download = nom;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+function setSaveStatus(text){
+  const status = document.getElementById('saveStatus');
+  status.classList.add('saved');
+  document.getElementById('saveStatusText').textContent = text;
+}
+
+function buildMailBody(bundle){
+  return [
+    'Bonjour,',
+    '',
+    'Veuillez trouver ci-joint le formulaire CoHoMa 4 au format JSON.',
+    '',
+    `Entite : ${bundle.payload.equipe.entitePrincipale}`,
+    `Contact(s) : ${bundle.payload.contacts.map(c => c.prenom + ' ' + c.nom).join(', ')}`,
+    '',
+    'Cordialement,'
+  ].join('\n');
+}
+
+const COHOMA_MAIL_RECIPIENT = 'stat-innov_choma.trait.fct@intradef.gouv.fr';
+
+function sauvegarderJSON(){
+  const bundle = preparerExportJSON();
+  if(!bundle) return;
+  telechargerJSON(bundle.payload, bundle.nom);
+  setSaveStatus('Sauvegardé - ' + bundle.nom);
+  toast(`Fichier "${bundle.nom}" téléchargé`, 'success');
+}
+
+async function envoyerFormulaire(){
+  const bundle = preparerExportJSON();
+  if(!bundle) return;
+
+  const subject = `Formulaire CoHoMa 4 - ${bundle.nomEquipe}`;
+  const body = buildMailBody(bundle);
+
+  telechargerJSON(bundle.payload, bundle.nom);
+  window.location.href = `mailto:${COHOMA_MAIL_RECIPIENT}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(`${body}\n\nPièce jointe à ajouter : ${bundle.nom}`)}`;
+  setSaveStatus('Email préparé - ' + bundle.nom);
+  toast(`Message prérempli ouvert pour ${COHOMA_MAIL_RECIPIENT}. Ajoutez le JSON téléchargé en pièce jointe.`, 'success');
+}
+
+function resetForm(){
+  if(!confirm('Réinitialiser le formulaire ?')) return;
+  [
+    'txtNomEquipe',
+    'txtEntitePrincipale',
+    'txtTypeEntite',
+    'txtSecteurActivite',
+  ].forEach(id => {
+    const el = document.getElementById(id);
+    if(el) el.value = '';
+  });
+  document.getElementById('chkDejaParticipe').checked = false;
+  toggleDejaParticipe();
+  setContacts([]);
+  const status = document.getElementById('saveStatus');
+  status.classList.remove('saved');
+  document.getElementById('saveStatusText').textContent = 'Aucune sauvegarde';
+  updateStats();
+}
+
+let toastTimer;
+function toast(msg, type = 'success'){
+  const el = document.getElementById('toast');
+  document.getElementById('toastMsg').textContent = msg;
+  document.getElementById('toastIcon').textContent = type === 'success' ? '✓' : '⚠';
+  el.className = `show ${type}`;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { el.className = type; }, 3200);
+}
+
+function toggleTheme(){
+  const html = document.documentElement;
+  const current = html.getAttribute('data-theme');
+  const next = current === 'light' ? 'dark' : 'light';
+  html.setAttribute('data-theme', next);
+  try { localStorage.setItem('cohoma4-theme', next); } catch(e){}
+}
+
+function initTheme(){
+  let saved = null;
+  try { saved = localStorage.getItem('cohoma4-theme'); } catch(e){}
+  if(!saved) saved = window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+  document.documentElement.setAttribute('data-theme', saved);
+}
+
+initTheme();
+
+document.addEventListener('DOMContentLoaded', () => {
+  ensureContactsPlaceholder();
+  document.body.addEventListener('input', updateStats);
+  updateStats();
+});
+</script>
+</body>
+</html>
