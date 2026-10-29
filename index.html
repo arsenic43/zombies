@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mon Localisateur Temps Réel</title>
+
+    <!-- 1. Inclusion de la librairie Leaflet CSS pour le style de la carte -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
+    
+    <style>
+        /* 2. Style CSS essentiel pour que la carte occupe tout l'écran */
+        body, html {
+            height: 100%;
+            margin: 0;
+            padding: 0;
+        }
+        #map {
+            height: 100%;
+            width: 100%;
+        }
+    </style>
+</head>
+<body >
+
+    <!-- 3. Conteneur où Leaflet dessinera la carte -->
+    <div id="map"></div>
+
+    <!-- 4. Inclusion de la librairie Leaflet JavaScript pour le fonctionnement de la carte -->
+    <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+
+    <script>
+        // =================================================================
+        // 5. LOGIQUE JAVASCRIPT (Géolocalisation en temps réel)
+        // =================================================================
+
+        // Initialisation de la carte et centrage initial
+        // Le point [0, 0] est un centrage arbitraire pour le démarrage
+        const map = L.map('map').setView([0, 0], 2);
+
+        // Ajout de la couche OpenStreetMap (les tuiles de la carte)
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
+        }).addTo(map);
+
+        let marker = null; // Variable pour gérer le marqueur GPS
+
+        // Fonction qui gère l'affichage de la position
+        function updatePosition(lat, lon) {
+            const newCoordinates = [lat, lon];
+
+            // Si le marqueur existe déjà, on le déplace
+            if (marker) {
+                marker.setLatLng(newCoordinates);
+            } else {
+                // Sinon, on le crée et on l'ajoute à la carte
+                marker = L.marker(newCoordinates).addTo(map);
+            }
+
+            // On centre la vue de la carte sur la nouvelle position
+            map.setView(newCoordinates, 15); 
+        }
+
+        // Vérification et activation de la géolocalisation
+        if ("geolocation" in navigator) {
+            // watchPosition surveille les changements de position de l'utilisateur en permanence
+            navigator.geolocation.watchPosition((position) => {
+                const lat = position.coords.latitude;
+                const lon = position.coords.longitude;
+                updatePosition(lat, lon);
+            }, (error) => {
+                // Gestion des erreurs de géolocalisation (utilisateur refuse, signal faible, etc.)
+                console.error("Erreur de géolocalisation:", error.message);
+                alert("Impossible de récupérer votre position. Assurez-vous d'avoir autorisé l'accès à la localisation et d'avoir une connexion active.");
+            });
+        } else {
+            // Message si le navigateur n'est pas compatible
+            alert("Ce navigateur ne supporte pas la géolocalisation.");
+        }
+    </script>
+
+</body>
+</html>
