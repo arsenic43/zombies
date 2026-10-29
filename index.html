@@ -3,81 +3,119 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Mon Localisateur Temps Réel</title>
+    <title>Localisation en Temps Réel</title>
 
-    <!-- 1. Inclusion de la librairie Leaflet CSS pour le style de la carte -->
+    <!-- 1. Inclusion de Leaflet CSS -->
     <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
-    
+
     <style>
-        /* 2. Style CSS essentiel pour que la carte occupe tout l'écran */
-        body, html {
-            height: 100%;
-            margin: 0;
-            padding: 0;
-        }
+        /* Définition de la taille du conteneur de la carte */
         #map {
-            height: 100%;
+            height: 100vh; /* Prend toute la hauteur de la vue */
             width: 100%;
         }
     </style>
 </head>
-<body >
+<body>
 
-    <!-- 3. Conteneur où Leaflet dessinera la carte -->
+    <!-- Conteneur où la carte sera affichée -->
     <div id="map"></div>
 
-    <!-- 4. Inclusion de la librairie Leaflet JavaScript pour le fonctionnement de la carte -->
+    <!-- 2. Inclusion de Leaflet JavaScript -->
     <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
 
     <script>
-        // =================================================================
-        // 5. LOGIQUE JAVASCRIPT (Géolocalisation en temps réel)
-        // =================================================================
+        // Variables globales pour stocker la position centrale
+        let userPosition = null;
+        let map = null;
 
-        // Initialisation de la carte et centrage initial
-        // Le point [0, 0] est un centrage arbitraire pour le démarrage
-        const map = L.map('map').setView([0, 0], 2);
+        // Fonction pour initialiser la carte
+        function initializeMap(lat, lon) {
+            // Initialisation de la carte centrée sur la position de l'utilisateur
+            map = L.map('map').setView([lat, lon], 16); // Zoom initial à 16
 
-        // Ajout de la couche OpenStreetMap (les tuiles de la carte)
-        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-            attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
-        }).addTo(map);
+            // Ajout du tuile OpenStreetMap (Base Map)
+            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+            }).addTo(map);
 
-        let marker = null; // Variable pour gérer le marqueur GPS
+            // --- Option Satellite (Pour un rendu satellite, remplacez la ligne ci-dessus) ---
+            /*
+            Pour utiliser une carte satellite, vous pouvez remplacer le L.tileLayer ci-dessus par :
+            L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{x}/{y}', {
+                attribution: 'Esri, DigitalGlobe, GeoEye, Earthstar Geographics, CNES/Airbus DS, USDA, USGS, AeroGRID, IGN, IGP, swisstopo, and the GIS User Community'
+            }).addTo(map);
+            */
 
-        // Fonction qui gère l'affichage de la position
-        function updatePosition(lat, lon) {
-            const newCoordinates = [lat, lon];
 
-            // Si le marqueur existe déjà, on le déplace
-            if (marker) {
-                marker.setLatLng(newCoordinates);
-            } else {
-                // Sinon, on le crée et on l'ajoute à la carte
-                marker = L.marker(newCoordinates).addTo(map);
+            // Affichage de la position actuelle de l'utilisateur
+            L.marker([lat, lon]).addTo(map)
+                .bindPopup("<b>Votre Position Actuelle</b><br>Lat: " + lat.toFixed(4) + ", Lon: " + lon.toFixed(4))
+                .openPopup();
+
+            userPosition = { lat: lat, lon: lon };
+            generateRandomPoints(lat, lon);
+        }
+
+        // Fonction pour générer des points aléatoires
+        function generateRandomPoints(centerLat, centerLon) {
+            const points = [];
+            const radiusMeters = 50;
+            const numPoints = 3;
+
+            for (let i = 0; i < numPoints; i++) {
+                // Générer un angle aléatoire entre 0 et 2*PI
+                const angle = Math.random() * 2 * Math.PI;
+                // Générer une distance aléatoire dans le rayon
+                const distance = Math.random() * radiusMeters;
+
+                // Calculer la nouvelle latitude et longitude (en utilisant la trigonométrie sphérique)
+                const newLat = centerLat + (distance / 100000) * Math.cos(angle);
+                const newLon = centerLon + (distance / 100000) * Math.sin(angle);
+
+                points.push({ lat: newLat, lon: newLon });
             }
 
-            // On centre la vue de la carte sur la nouvelle position
-            map.setView(newCoordinates, 15); 
-        }
-
-        // Vérification et activation de la géolocalisation
-        if ("geolocation" in navigator) {
-            // watchPosition surveille les changements de position de l'utilisateur en permanence
-            navigator.geolocation.watchPosition((position) => {
-                const lat = position.coords.latitude;
-                const lon = position.coords.longitude;
-                updatePosition(lat, lon);
-            }, (error) => {
-                // Gestion des erreurs de géolocalisation (utilisateur refuse, signal faible, etc.)
-                console.error("Erreur de géolocalisation:", error.message);
-                alert("Impossible de récupérer votre position. Assurez-vous d'avoir autorisé l'accès à la localisation et d'avoir une connexion active.");
+            // Ajouter les marqueurs sur la carte
+            points.forEach(point => {
+                L.circleMarker([point.lat, point.lon], {
+                    radius: 5, // Taille du rond
+                    color: 'red', // Couleur rouge
+                    fillColor: '#f03',
+                    fillOpacity: 0.8,
+                    weight: 1
+                }).addTo(map)
+                .bindPopup(`Point aléatoire #${points.indexOf(point) + 1}`);
             });
-        } else {
-            // Message si le navigateur n'est pas compatible
-            alert("Ce navigateur ne supporte pas la géolocalisation.");
         }
-    </script>
 
+        // Fonction principale de géolocalisation
+        function getLocation() {
+            if (navigator.geolocation) {
+                navigator.geolocation.getCurrentPosition(
+                    (position) => {
+                        const lat = position.coords.latitude;
+                        const lon = position.coords.longitude;
+                        initializeMap(lat, lon);
+                    },
+                    (error) => {
+                        alert("Erreur de géolocalisation : Veuillez autoriser l'accès à votre position.");
+                        console.error("Geolocation error:", error);
+                    },
+                    {
+                        enableHighAccuracy: true,
+                        timeout: 5000,
+                        maximumAge: 0
+                    }
+                );
+            } else {
+                alert("Votre navigateur ne supporte pas la géolocalisation.");
+            }
+        }
+
+        // Lancement de la fonction au chargement de la page
+        getLocation();
+
+    </script>
 </body>
 </html>
