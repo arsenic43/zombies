@@ -29,24 +29,21 @@
         let userPosition = null;
         let map = null;
 
+        // URL des tuiles OSM (Par défaut)
+        const OSM_URL = 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png';
+        // URL des tuiles Satellite (Option recommandée)
+        const SATELLITE_URL = 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{x}/{y}';
+
+
         // Fonction pour initialiser la carte
-        function initializeMap(lat, lon) {
+        function initializeMap(lat, lon, tileLayer) {
             // Initialisation de la carte centrée sur la position de l'utilisateur
             map = L.map('map').setView([lat, lon], 16); // Zoom initial à 16
 
-            // Ajout du tuile OpenStreetMap (Base Map)
-            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-                attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+            // Ajout de la couche de tuiles choisie (OSM ou Satellite)
+            L.tileLayer(tileLayer, {
+                attribution: '© OpenStreetMap contributors' // Attribution ajustée
             }).addTo(map);
-
-            // --- Option Satellite (Pour un rendu satellite, remplacez la ligne ci-dessus) ---
-            /*
-            Pour utiliser une carte satellite, vous pouvez remplacer le L.tileLayer ci-dessus par :
-            L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{x}/{y}', {
-                attribution: 'Esri, DigitalGlobe, GeoEye, Earthstar Geographics, CNES/Airbus DS, USDA, USGS, AeroGRID, IGN, IGP, swisstopo, and the GIS User Community'
-            }).addTo(map);
-            */
-
 
             // Affichage de la position actuelle de l'utilisateur
             L.marker([lat, lon]).addTo(map)
@@ -96,15 +93,20 @@
                     (position) => {
                         const lat = position.coords.latitude;
                         const lon = position.coords.longitude;
-                        initializeMap(lat, lon);
+                        
+                        // *** DÉCISION CLÉ : Choisir la couche de tuiles ***
+                        // Ici, nous utilisons la couche satellite.
+                        initializeMap(lat, lon, SATELLITE_URL);
                     },
                     (error) => {
                         alert("Erreur de géolocalisation : Veuillez autoriser l'accès à votre position.");
                         console.error("Geolocation error:", error);
+                        // En cas d'échec, on peut revenir à l'OSM par sécurité
+                        initializeMap(error.coords.latitude, error.coords.longitude, OSM_URL);
                     },
                     {
                         enableHighAccuracy: true,
-                        timeout: 5000,
+                        timeout: 10000, // Augmentation du timeout pour être plus patient
                         maximumAge: 0
                     }
                 );
