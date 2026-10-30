@@ -35,17 +35,17 @@
             map = L.map('map').setView([lat, lon], 16); // Zoom initial à 16
 
             // Ajout du tuile OpenStreetMap (Base Map)
-           L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
                 attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
             }).addTo(map);
 
             // --- Option Satellite (Pour un rendu satellite, remplacez la ligne ci-dessus) ---
-            
-            //Pour utiliser une carte satellite, vous pouvez remplacer le L.tileLayer ci-dessus par :
-      //      L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{x}/{y}', {
-      //          attribution: 'Esri, DigitalGlobe, GeoEye, Earthstar Geographics, CNES/Airbus DS, USDA, USGS, AeroGRID, IGN, IGP, swisstopo, and the GIS User Community'
-      //      }).addTo(map);
-            
+            /*
+            Pour utiliser une carte satellite, vous pouvez remplacer le L.tileLayer ci-dessus par :
+            L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{x}/{y}', {
+                attribution: 'Esri, DigitalGlobe, GeoEye, Earthstar Geographics, CNES/Airbus DS, USDA, USGS, AeroGRID, IGN, IGP, swisstopo, and the GIS User Community'
+            }).addTo(map);
+            */
 
 
             // Affichage de la position actuelle de l'utilisateur
