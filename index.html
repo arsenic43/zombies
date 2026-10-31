@@ -1,123 +1,197 @@
 <!DOCTYPE html>
 <html lang="fr">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Localisation en Temps Réel</title>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Ma position en temps réel</title>
 
-    <!-- 1. Inclusion de Leaflet CSS -->
-    <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
+  <!-- Leaflet (CSS + JS) -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+        integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+        crossorigin=""/>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+          integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+          crossorigin=""></script>
 
-    <style>
-        /* Définition de la taille du conteneur de la carte */
-        #map {
-            height: 100vh; /* Prend toute la hauteur de la vue */
-            width: 100%;
-        }
-    </style>
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      height: 100%;
+    }
+    #map {
+      width: 100%;
+      height: 100%;
+    }
+    /* Message d'information / d'erreur */
+    #message {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      z-index: 1000;
+      background: rgba(255, 255, 255, 0.95);
+      border: 1px solid #ccc;
+      border-radius: 8px;
+      padding: 16px 24px;
+      font-family: sans-serif;
+      font-size: 14px;
+      max-width: 320px;
+      text-align: center;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+    }
+    #message.hidden {
+      display: none;
+    }
+  </style>
 </head>
 <body>
+  <div id="map"></div>
+  <div id="message">En attente de votre position…<br>Veuillez autoriser la géolocalisation.</div>
 
-    <!-- Conteneur où la carte sera affichée -->
-    <div id="map"></div>
+  <script>
+    "use strict";
 
-    <!-- 2. Inclusion de Leaflet JavaScript -->
-    <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+    const ZOOM_MAX = 19;          // Zoom maximum pour les tuiles OpenStreetMap
+    const RAYON_METRES = 50;      // Rayon des points aléatoires
+    const NB_POINTS = 3;          // Nombre de points à afficher
 
-    <script>
-        // Variables globales pour stocker la position centrale
-        let userPosition = null;
-        let map = null;
+    // --- Initialisation de la carte (centrée arbitrairement en attendant le GPS) ---
+    const map = L.map("map", {
+      zoomControl: false,   // Aucun autre contrôle demandé
+      maxZoom: ZOOM_MAX
+    }).setView([46.603354, 1.888334], ZOOM_MAX); // Centré sur la France par défaut
 
-        // URL des tuiles OSM (Par défaut)
-        const OSM_URL = 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png';
-        // URL des tuiles Satellite (Option recommandée)
-        const SATELLITE_URL = 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{x}/{y}';
+    // --- Fonds de carte ---
+    const coucheOSM = L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      maxZoom: ZOOM_MAX,
+      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+    });
 
+    const coucheSatellite = L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}", {
+      maxZoom: ZOOM_MAX,
+      attribution: "Imagery &copy; Esri, Maxar, Earthstar Geographics"
+    });
 
-        // Fonction pour initialiser la carte
-        function initializeMap(lat, lon, tileLayer) {
-            // Initialisation de la carte centrée sur la position de l'utilisateur
-            map = L.map('map').setView([lat, lon], 16); // Zoom initial à 16
+    coucheOSM.addTo(map); // Vue par défaut
 
-            // Ajout de la couche de tuiles choisie (OSM ou Satellite)
-            L.tileLayer(tileLayer, {
-                attribution: '© OpenStreetMap contributors' // Attribution ajustée
-            }).addTo(map);
+    // --- Sélecteur de fond de carte en haut à droite ---
+    L.control.layers(
+      { "Par défaut": coucheOSM, "Satellite": coucheSatellite },
+      null,
+      { position: "topright", collapsed: false }
+    ).addTo(map);
 
-            // Affichage de la position actuelle de l'utilisateur
-            L.marker([lat, lon]).addTo(map)
-                .bindPopup("<b>Votre Position Actuelle</b><br>Lat: " + lat.toFixed(4) + ", Lon: " + lon.toFixed(4))
-                .openPopup();
+    // --- Éléments affichés ---
+    let marqueurPosition = null;
+    let pointsAleatoires = [];
 
-            userPosition = { lat: lat, lon: lon };
-            generateRandomPoints(lat, lon);
-        }
+    /**
+     * Génère un point aléatoire (distribution uniforme) dans un disque
+     * de `rayon` mètres autour de (lat, lng).
+     */
+    function pointAleatoire(lat, lng, rayon) {
+      const angle = Math.random() * 2 * Math.PI;
+      const distance = rayon * Math.sqrt(Math.random());
+      const dLat = (distance * Math.sin(angle)) / 111320;                            // ~111 320 m par degré de latitude
+      const dLng = (distance * Math.cos(angle)) / (111320 * Math.cos(lat * Math.PI / 180));
+      return [lat + dLat, lng + dLng];
+    }
 
-        // Fonction pour générer des points aléatoires
-        function generateRandomPoints(centerLat, centerLon) {
-            const points = [];
-            const radiusMeters = 50;
-            const numPoints = 3;
+    /**
+     * Affiche la position et les 3 points aléatoires.
+     */
+    function afficherPosition(position) {
+      const lat = position.coords.latitude;
+      const lng = position.coords.longitude;
+      const exactitude = position.coords.accuracy;
 
-            for (let i = 0; i < numPoints; i++) {
-                // Générer un angle aléatoire entre 0 et 2*PI
-                const angle = Math.random() * 2 * Math.PI;
-                // Générer une distance aléatoire dans le rayon
-                const distance = Math.random() * radiusMeters;
+      document.getElementById("message").classList.add("hidden");
 
-                // Calculer la nouvelle latitude et longitude (en utilisant la trigonométrie sphérique)
-                const newLat = centerLat + (distance / 100000) * Math.cos(angle);
-                const newLon = centerLon + (distance / 100000) * Math.sin(angle);
+      // Enregistrer la position initiale de la carte (zoom max au 1er fix GPS)
+      if (!map._initialized) {
+        map._initialized = true;
+        map.setView([lat, lng], ZOOM_MAX);
+      } else {
+        map.setView([lat, lng], map.getZoom());
+      }
 
-                points.push({ lat: newLat, lon: newLon });
-            }
+      // Marqueur de position (rond bleu)
+      if (marqueurPosition) {
+        marqueurPosition.setLatLng([lat, lng]);
+      } else {
+        marqueurPosition = L.circleMarker([lat, lng], {
+          radius: 8,
+          color: "#ffffff",
+          weight: 2,
+          fillColor: "#2a81cb",
+          fillOpacity: 1
+        }).addTo(map);
+        map.setMaxBounds([
+          [lat - 0.05, lng - 0.05],
+          [lat + 0.05, lng + 0.05]
+        ]);
+      }
 
-            // Ajouter les marqueurs sur la carte
-            points.forEach(point => {
-                L.circleMarker([point.lat, point.lon], {
-                    radius: 5, // Taille du rond
-                    color: 'red', // Couleur rouge
-                    fillColor: '#f03',
-                    fillOpacity: 0.8,
-                    weight: 1
-                }).addTo(map)
-                .bindPopup(`Point aléatoire #${points.indexOf(point) + 1}`);
-            });
-        }
+      // Supprimer les anciens points aléatoires
+      pointsAleatoires.forEach(p => map.removeLayer(p));
+      pointsAleatoires = [];
 
-        // Fonction principale de géolocalisation
-        function getLocation() {
-            if (navigator.geolocation) {
-                navigator.geolocation.getCurrentPosition(
-                    (position) => {
-                        const lat = position.coords.latitude;
-                        const lon = position.coords.longitude;
-                        
-                        // *** DÉCISION CLÉ : Choisir la couche de tuiles ***
-                        // Ici, nous utilisons la couche satellite.
-                        initializeMap(lat, lon, SATELLITE_URL);
-                    },
-                    (error) => {
-                        alert("Erreur de géolocalisation : Veuillez autoriser l'accès à votre position.");
-                        console.error("Geolocation error:", error);
-                        // En cas d'échec, on peut revenir à l'OSM par sécurité
-                        initializeMap(error.coords.latitude, error.coords.longitude, OSM_URL);
-                    },
-                    {
-                        enableHighAccuracy: true,
-                        timeout: 10000, // Augmentation du timeout pour être plus patient
-                        maximumAge: 0
-                    }
-                );
-            } else {
-                alert("Votre navigateur ne supporte pas la géolocalisation.");
-            }
-        }
+      // Générer et afficher les 3 points rouges
+      for (let i = 0; i < NB_POINTS; i++) {
+        const [pLat, pLng] = pointAleatoire(lat, lng, RAYON_METRES);
+        const point = L.circleMarker([pLat, pLng], {
+          radius: 8,
+          color: "#cc0000",
+          weight: 2,
+          fillColor: "#ff0000",
+          fillOpacity: 1
+        }).addTo(map);
+        point.bindTooltip("Point aléatoire " + (i + 1), { permanent: false });
+        pointsAleatoires.push(point);
+      }
 
-        // Lancement de la fonction au chargement de la page
-        getLocation();
+      // Limite du rayon de 50 m (visualisation, facultatif)
+      if (map._cercleRayon) {
+        map._cercleRayon.setLatLng([lat, lng]);
+      } else {
+        map._cercleRayon = L.circle([lat, lng], {
+          radius: RAYON_METRES,
+          color: "#cc0000",
+          weight: 1,
+          fill: false,
+          dashArray: "4 4"
+        }).addTo(map);
+      }
 
-    </script>
+      console.log("Position : " + lat + ", " + lng + " (précision : " + Math.round(exactitude) + " m)");
+    }
+
+    /**
+     * Gestion des erreurs de géolocalisation.
+     */
+    function erreurGeoloc(erreur) {
+      const messages = {
+        1: "Géolocalisation refusée. Veuillez l'autoriser dans votre navigateur.",
+        2: "Position indisponible. Réessayez plus tard.",
+        3: "Délai dépassé pour obtenir la position."
+      };
+      document.getElementById("message").classList.remove("hidden");
+      document.getElementById("message").innerHTML =
+        "<strong>Erreur :</strong><br>" + (messages[erreur.code] || erreur.message);
+    }
+
+    // --- Suivi de la position en temps réel ---
+    if ("geolocation" in navigator) {
+      navigator.geolocation.watchPosition(afficherPosition, erreurGeoloc, {
+        enableHighAccuracy: true,
+        timeout: 15000,
+        maximumAge: 0
+      });
+    } else {
+      document.getElementById("message").innerHTML =
+        "<strong>Erreur :</strong><br>Votre navigateur ne prend pas en charge la géolocalisation.";
+    }
+  </script>
 </body>
 </html>
