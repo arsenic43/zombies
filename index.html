@@ -52,9 +52,11 @@
   <script>
     "use strict";
 
-    const ZOOM_MAX = 19;          // Zoom maximum pour les tuiles OpenStreetMap
-    const RAYON_METRES = 50;      // Rayon des points aléatoires
-    const NB_POINTS = 3;          // Nombre de points à afficher
+    const ZOOM_MAX = 19;             // Zoom maximum pour les tuiles OpenStreetMap
+    const RAYON_METRES = 50;         // Rayon des points aléatoires
+    const NB_POINTS = 3;             // Nombre de points à afficher
+    const INTERVALLE_MS = 1000;      // Actualisation toutes les secondes
+    const VITESSE_MS = 5 / 3.6;      // Vitesse des points : 5 km/h ≈ 1,39 m/s
 
     // --- Initialisation de la carte (centrée arbitrairement en attendant le GPS) ---
     const map = L.map("map", {
@@ -82,9 +84,31 @@
       { position: "topright", collapsed: false }
     ).addTo(map);
 
-    // --- Éléments affichés ---
-    let marqueurPosition = null;
-    let pointsAleatoires = [];
+    // --- État de l'application ---
+    let carteInitialisee = false;    // Premier centrage sur la position GPS déjà fait ?
+    let marqueurPosition = null;     // Rond bleu = ma position
+    let cercleRayon = null;          // Cercle rouge en pointillés = rayon de 50 m
+    let pointsRouges = [];           // Les 3 points rouges {marker, lat, lng}
+    let dernierePosition = null;     // Dernière position reçue du navigateur
+
+    // Cache des polygones "obstacles" (bâtiments + eau) autour de ma position
+    let polygonesObstacles = [];     // [{ {lat, lon}, ... }, ...]
+    let centreGeometrie = null;      // Position pour laquelle le cache est valable
+    let geometrieDisponible = false; // Surcharge chargée avec succès ?
+
+    /**
+     * Distance en mètres entre deux points (lat/lng).
+     */
+    function distanceMetres(lat1, lng1, lat2, lng2) {
+      const R = 6371000;
+      const p1 = lat1 * Math.PI / 180;
+      const p2 = lat2 * Math.PI / 180;
+      const dLat = (lat2 - lat1) * Math.PI / 180;
+      const dLng = (lng2 - lng1) * Math.PI / 180;
+      const a = Math.sin(dLat / 2) ** 2 +
+                Math.cos(p1) * Math.cos(p2) * Math.sin(dLng / 2) ** 2;
+      return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    }
 
     /**
      * Génère un point aléatoire (distribution uniforme) dans un disque
@@ -95,25 +119,151 @@
       const distance = rayon * Math.sqrt(Math.random());
       const dLat = (distance * Math.sin(angle)) / 111320;                            // ~111 320 m par degré de latitude
       const dLng = (distance * Math.cos(angle)) / (111320 * Math.cos(lat * Math.PI / 180));
-      return [lat + dLat, lng + dLng];
+      return { lat: lat + dLat, lng: lng + dLng };
     }
 
     /**
-     * Affiche la position et les 3 points aléatoires.
+     * Test d'inclusion d'un point dans un polygone (algorithme du lancer de rayon).
      */
-    function afficherPosition(position) {
-      const lat = position.coords.latitude;
-      const lng = position.coords.longitude;
-      const exactitude = position.coords.accuracy;
+    function pointDansPolygone(lat, lng, polygone) {
+      let dansPolygone = false;
+      for (let i = 0, j = polygone.length - 1; i < polygone.length; j = i++) {
+        const latI = polygone[i].lat, lngI = polygone[i].lon;
+        const latJ = polygone[j].lat, lngJ = polygone[j].lon;
+        if ((latI > lat) !== (latJ > lat) &&
+            lng < (lngJ - lngI) * (lat - latI) / (latJ - latI) + lngI) {
+          dansPolygone = !dansPolygone;
+        }
+      }
+      return dansPolygone;
+    }
+
+    /**
+     * Le point est-il sur un bâtiment ou un plan d'eau (d'après le cache OSM) ?
+     */
+    function estSurObstacle(lat, lng) {
+      if (!geometrieDisponible) return false; // Pas de données : on ne peut pas tester
+      return polygonesObstacles.some(p => pointDansPolygone(lat, lng, p));
+    }
+
+    /**
+     * Recherche un point aléatoire hors bâtiments et hors eau.
+     * Jusqu'à 20 tentatives ; en dernier recours, on garde la dernière proposition.
+     */
+    function pointLibreAleatoire(lat, lng) {
+      let proposition = pointAleatoire(lat, lng, RAYON_METRES);
+      for (let essai = 0; essai < 20; essai++) {
+        proposition = pointAleatoire(lat, lng, RAYON_METRES);
+        if (!estSurObstacle(proposition.lat, proposition.lng)) break;
+      }
+      return proposition;
+    }
+
+    /**
+     * Charge les polygones des bâtiments et de l'eau dans un rayon de 100 m
+     * autour de la position (API Overpass d'OpenStreetMap).
+     * Le cache est rafraîchi seulement si l'on s'est déplacé de plus de 25 m.
+     */
+    async function majSurcharge(lat, lng) {
+      if (centreGeometrie &&
+          distanceMetres(centreGeometrie.lat, centreGeometrie.lng, lat, lng) < 25) {
+        return; // Cache encore valable
+      }
+
+      const requete = "[out:json][timeout:15];(" +
+        'way["building"](around:100,' + lat + "," + lng + ");" +
+        'way["natural"="water"](around:100,' + lat + "," + lng + ");" +
+        'way["waterway"="riverbank"](around:100,' + lat + "," + lng + ");" +
+        ");out geom;";
+
+      try {
+        const reponse = await fetch("https://overpass-api.de/api/interpreter", {
+          method: "POST",
+          headers: { "Content-Type": "application/x-www-form-urlencoded" },
+          body: "data=" + encodeURIComponent(requete)
+        });
+        const donnees = await reponse.json();
+        polygonesObstacles = (donnees.elements || [])
+          .filter(e => e.geometry && e.geometry.length > 2)
+          .map(e => e.geometry);
+        centreGeometrie = { lat: lat, lng: lng };
+        geometrieDisponible = true;
+      } catch (erreur) {
+        // Overpass indisponible : les points resteront aléatoires "simples"
+        console.warn("Impossible de charger la surcharge OSM :", erreur);
+        geometrieDisponible = false;
+        polygonesObstacles = [];
+      }
+    }
+
+    /**
+     * Crée les 3 points rouges une première fois (hors obstacles).
+     */
+    async function creerPoints(lat, lng) {
+      await majSurcharge(lat, lng);
+      for (let i = 0; i < NB_POINTS; i++) {
+        const p = pointLibreAleatoire(lat, lng);
+        const marker = L.circleMarker([p.lat, p.lng], {
+          radius: 8,
+          color: "#cc0000",
+          weight: 2,
+          fillColor: "#ff0000",
+          fillOpacity: 1
+        }).addTo(map);
+        marker.bindTooltip("Point " + (i + 1));
+        pointsRouges.push({ marker: marker, lat: p.lat, lng: p.lng });
+      }
+    }
+
+    /**
+     * Déplace un point vers la position à la vitesse de 5 km/h.
+     * Si le point atteint la position, il est replacé aléatoirement (hors obstacles).
+     * Si le nouveau point tombe sur un bâtiment ou de l'eau, il ne bouge pas ce tour.
+     */
+    async function avancerPoint(point, lat, lng) {
+      const distance = distanceMetres(point.lat, point.lng, lat, lng);
+      const avance = VITESSE_MS * (INTERVALLE_MS / 1000); // Distance parcourue en 1 s
+
+      if (distance <= avance) {
+        // Le point a atteint ma position : nouvelle position aléatoire
+        point.lat = lat;
+        point.lng = lng;
+        await majSurcharge(lat, lng);
+        const p = pointLibreAleatoire(lat, lng);
+        point.lat = p.lat;
+        point.lng = p.lng;
+      } else {
+        const ratio = avance / distance;
+        const nouveauLat = point.lat + (lat - point.lat) * ratio;
+        const nouveauLng = point.lng + (lng - point.lng) * ratio;
+        if (!estSurObstacle(nouveauLat, nouveauLng)) {
+          point.lat = nouveauLat;
+          point.lng = nouveauLng;
+        }
+        // Sinon : obstacle sur la trajectoire, le point attend ce tour
+      }
+
+      point.marker.setLatLng([point.lat, point.lng]);
+    }
+
+    /**
+     * Mise à jour de l'affichage, appelée toutes les secondes.
+     */
+    async function actualiserTout() {
+      if (!dernierePosition) return;
+
+      const lat = dernierePosition.coords.latitude;
+      const lng = dernierePosition.coords.longitude;
 
       document.getElementById("message").classList.add("hidden");
 
-      // Enregistrer la position initiale de la carte (zoom max au 1er fix GPS)
-      if (!map._initialized) {
-        map._initialized = true;
+      // Première réception de la position : zoom maximum, centré sur moi
+      if (!carteInitialisee) {
+        carteInitialisee = true;
         map.setView([lat, lng], ZOOM_MAX);
+        await creerPoints(lat, lng);
       } else {
-        map.setView([lat, lng], map.getZoom());
+        map.setView([lat, lng]);
       }
 
       // Marqueur de position (rond bleu)
@@ -127,35 +277,13 @@
           fillColor: "#2a81cb",
           fillOpacity: 1
         }).addTo(map);
-        map.setMaxBounds([
-          [lat - 0.05, lng - 0.05],
-          [lat + 0.05, lng + 0.05]
-        ]);
       }
 
-      // Supprimer les anciens points aléatoires
-      pointsAleatoires.forEach(p => map.removeLayer(p));
-      pointsAleatoires = [];
-
-      // Générer et afficher les 3 points rouges
-      for (let i = 0; i < NB_POINTS; i++) {
-        const [pLat, pLng] = pointAleatoire(lat, lng, RAYON_METRES);
-        const point = L.circleMarker([pLat, pLng], {
-          radius: 8,
-          color: "#cc0000",
-          weight: 2,
-          fillColor: "#ff0000",
-          fillOpacity: 1
-        }).addTo(map);
-        point.bindTooltip("Point aléatoire " + (i + 1), { permanent: false });
-        pointsAleatoires.push(point);
-      }
-
-      // Limite du rayon de 50 m (visualisation, facultatif)
-      if (map._cercleRayon) {
-        map._cercleRayon.setLatLng([lat, lng]);
+      // Cercle du rayon de 50 m (visualisation)
+      if (cercleRayon) {
+        cercleRayon.setLatLng([lat, lng]);
       } else {
-        map._cercleRayon = L.circle([lat, lng], {
+        cercleRayon = L.circle([lat, lng], {
           radius: RAYON_METRES,
           color: "#cc0000",
           weight: 1,
@@ -164,7 +292,10 @@
         }).addTo(map);
       }
 
-      console.log("Position : " + lat + ", " + lng + " (précision : " + Math.round(exactitude) + " m)");
+      // Les 3 points avancent vers ma position à 5 km/h
+      for (const point of pointsRouges) {
+        await avancerPoint(point, lat, lng);
+      }
     }
 
     /**
@@ -181,13 +312,14 @@
         "<strong>Erreur :</strong><br>" + (messages[erreur.code] || erreur.message);
     }
 
-    // --- Suivi de la position en temps réel ---
+    // --- Suivi GPS : on garde la dernière position, l'affichage est actualisé chaque seconde ---
     if ("geolocation" in navigator) {
-      navigator.geolocation.watchPosition(afficherPosition, erreurGeoloc, {
-        enableHighAccuracy: true,
-        timeout: 15000,
-        maximumAge: 0
-      });
+      navigator.geolocation.watchPosition(
+        position => { dernierePosition = position; },
+        erreurGeoloc,
+        { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }
+      );
+      setInterval(actualiserTout, INTERVALLE_MS);
     } else {
       document.getElementById("message").innerHTML =
         "<strong>Erreur :</strong><br>Votre navigateur ne prend pas en charge la géolocalisation.";
