@@ -58,6 +58,16 @@
     const INTERVALLE_MS = 1000;      // Actualisation toutes les secondes
     const VITESSE_MS = 5 / 3.6;      // Vitesse des points : 5 km/h ≈ 1,39 m/s
 
+    // --- Maillage pour le contournement des obstacles ---
+    const COTE_CELLULE = 2;          // Taille d'une cellule du maillage : 2 m
+    const DEMI_MAILLAGE = 40;        // 81 x 81 cellules = 160 m x 160 m autour de moi
+    const NB_COTES = 2 * DEMI_MAILLAGE + 1;
+    const RACINE2 = Math.SQRT2;
+    const DEPLACEMENTS = [           // [dLigne, dColonne, coût] — 8 directions
+      [0, 1, 1], [0, -1, 1], [1, 0, 1], [-1, 0, 1],
+      [1, 1, RACINE2], [1, -1, RACINE2], [-1, 1, RACINE2], [-1, -1, RACINE2]
+    ];
+
     // --- Initialisation de la carte (centrée arbitrairement en attendant le GPS) ---
     const map = L.map("map", {
       zoomControl: false,   // Aucun autre contrôle demandé
@@ -95,6 +105,7 @@
     let polygonesObstacles = [];     // [{ {lat, lon}, ... }, ...]
     let centreGeometrie = null;      // Position pour laquelle le cache est valable
     let geometrieDisponible = false; // Surcharge chargée avec succès ?
+    let maillage = null;             // Grille d'occupation {lat0, lng0, pasLat, pasLng, obstruees}
 
     /**
      * Distance en mètres entre deux points (lat/lng).
@@ -161,8 +172,8 @@
 
     /**
      * Charge les polygones des bâtiments et de l'eau dans un rayon de 100 m
-     * autour de la position (API Overpass d'OpenStreetMap).
-     * Le cache est rafraîchi seulement si l'on s'est déplacé de plus de 25 m.
+     * autour de la position (API Overpass d'OpenStreetMap), puis reconstruit
+     * le maillage. Le cache ne bouge que si l'on s'est déplacé de plus de 25 m.
      */
     async function majSurcharge(lat, lng) {
       if (centreGeometrie &&
@@ -188,12 +199,205 @@
           .map(e => e.geometry);
         centreGeometrie = { lat: lat, lng: lng };
         geometrieDisponible = true;
+        construireMaillage(lat, lng);
       } catch (erreur) {
         // Overpass indisponible : les points resteront aléatoires "simples"
         console.warn("Impossible de charger la surcharge OSM :", erreur);
         geometrieDisponible = false;
         polygonesObstacles = [];
+        maillage = null;
       }
+    }
+
+    /**
+     * Construit la grille d'occupation (cellules obstruées par bâtiments ou eau).
+     * Une cellule est obstruée si son centre ou un de ses 4 points cardinaux
+     * tombe dans un polygone : cela crée une petite marge de sécurité sur les murs.
+     */
+    function construireMaillage(lat, lng) {
+      const pasLat = COTE_CELLULE / 111320;
+      const pasLng = COTE_CELLULE / (111320 * Math.cos(lat * Math.PI / 180));
+      const demiPLat = pasLat / 2, demiPLng = pasLng / 2;
+      const obstruees = new Uint8Array(NB_COTES * NB_COTES);
+      for (let i = 0; i < NB_COTES; i++) {
+        for (let j = 0; j < NB_COTES; j++) {
+          const cLat = lat + (i - DEMI_MAILLAGE) * pasLat;
+          const cLng = lng + (j - DEMI_MAILLAGE) * pasLng;
+          if (estSurObstacle(cLat, cLng) ||
+              estSurObstacle(cLat + demiPLat, cLng) ||
+              estSurObstacle(cLat - demiPLat, cLng) ||
+              estSurObstacle(cLat, cLng + demiPLng) ||
+              estSurObstacle(cLat, cLng - demiPLng)) {
+            obstruees[i * NB_COTES + j] = 1;
+          }
+        }
+      }
+      maillage = {
+        lat0: lat, lng0: lng,
+        pasLat: pasLat, pasLng: pasLng,
+        obstruees: obstruees
+      };
+    }
+
+    /**
+     * Indices (i, j) de la cellule du maillage contenant un point.
+     */
+    function indiceDe(lat, lng) {
+      let i = Math.round((lat - maillage.lat0) / maillage.pasLat) + DEMI_MAILLAGE;
+      let j = Math.round((lng - maillage.lng0) / maillage.pasLng) + DEMI_MAILLAGE;
+      i = Math.max(0, Math.min(NB_COTES - 1, i));
+      j = Math.max(0, Math.min(NB_COTES - 1, j));
+      return { i: i, j: j };
+    }
+
+    /**
+     * Coordonnées du centre d'une cellule.
+     */
+    function coordonneeDe(i, j) {
+      return [
+        maillage.lat0 + (i - DEMI_MAILLAGE) * maillage.pasLat,
+        maillage.lng0 + (j - DEMI_MAILLAGE) * maillage.pasLng
+      ];
+    }
+
+    /**
+     * Tas binaire minimal (trié sur le coût f).
+     */
+    function tasPousser(tas, f, n) {
+      tas.push(n);
+      let i = tas.length - 1;
+      while (i > 0) {
+        const p = (i - 1) >> 1;
+        if (f[tas[p]] <= f[tas[i]]) break;
+        const tmp = tas[p]; tas[p] = tas[i]; tas[i] = tmp;
+        i = p;
+      }
+    }
+
+    function tasRetirer(tas, f) {
+      const premier = tas[0];
+      const dernier = tas.pop();
+      if (tas.length) {
+        tas[0] = dernier;
+        let i = 0;
+        for (;;) {
+          const g = 2 * i + 1, d = 2 * i + 2;
+          let m = i;
+          if (g < tas.length && f[tas[g]] < f[tas[m]]) m = g;
+          if (d < tas.length && f[tas[d]] < f[tas[m]]) m = d;
+          if (m === i) break;
+          const tmp = tas[m]; tas[m] = tas[i]; tas[i] = tmp;
+          i = m;
+        }
+      }
+      return premier;
+    }
+
+    /**
+     * A* : plus court chemin de (depI, depJ) à (arrI, arrJ) en évitant les
+     * cellules obstruées, sans couper le coin des bâtiments.
+     * Renvoie un tableau de [lat, lng] ou null si aucun chemin.
+     */
+    function chercherChemin(latDep, lngDep, latArr, lngArr) {
+      if (!maillage) return null;
+      const dep = indiceDe(latDep, lngDep);
+      const arr = indiceDe(latArr, lngArr);
+      if (dep.i === arr.i && dep.j === arr.j) {
+        return [[latArr, lngArr]];
+      }
+
+      const nbCellules = NB_COTES * NB_COTES;
+      const depart = dep.i * NB_COTES + dep.j;
+      const arrivee = arr.i * NB_COTES + arr.j;
+      const g = new Float64Array(nbCellules).fill(Infinity);
+      const f = new Float64Array(nbCellules).fill(Infinity);
+      const parent = new Int32Array(nbCellules).fill(-1);
+      const ferme = new Uint8Array(nbCellules);
+      const tas = [];
+
+      g[depart] = 0;
+      f[depart] = distanceMetres(coordonneeDe(dep.i, dep.j)[0], coordonneeDe(dep.i, dep.j)[1],
+                                 coordonneeDe(arr.i, arr.j)[0], coordonneeDe(arr.i, arr.j)[1]);
+      tasPousser(tas, f, depart);
+
+      while (tas.length) {
+        const courant = tasRetirer(tas, f);
+        if (courant === arrivee) {
+          // Reconstruction du chemin (arrivée -> départ)
+          const chemin = [];
+          let c = courant;
+          while (c !== -1) {
+            chemin.unshift(coordonneeDe(Math.floor(c / NB_COTES), c % NB_COTES));
+            c = parent[c];
+          }
+          chemin[chemin.length - 1] = [latArr, lngArr]; // Point final exact
+          return chemin;
+        }
+        if (ferme[courant]) continue;
+        ferme[courant] = 1;
+
+        const ci = Math.floor(courant / NB_COTES), cj = courant % NB_COTES;
+        for (const [di, dj, cout] of DEPLACEMENTS) {
+          const ni = ci + di, nj = cj + dj;
+          if (ni < 0 || nj < 0 || ni >= NB_COTES || nj >= NB_COTES) continue;
+          const voisin = ni * NB_COTES + nj;
+          const voisinObstrue = maillage.obstruees[voisin] === 1 && voisin !== arrivee;
+          if (voisinObstrue || ferme[voisin]) continue;
+          if (di !== 0 && dj !== 0) {
+            // Une diagonale ne doit pas couper le coin d'une cellule obstruée
+            if (maillage.obstruees[ci * NB_COTES + nj] === 1 ||
+                maillage.obstruees[ni * NB_COTES + cj] === 1) continue;
+          }
+          const gNouveau = g[courant] + cout;
+          if (gNouveau < g[voisin]) {
+            const cVoisin = coordonneeDe(ni, nj);
+            g[voisin] = gNouveau;
+            f[voisin] = gNouveau + distanceMetres(cVoisin[0], cVoisin[1],
+                                                  coordonneeDe(arr.i, arr.j)[0], coordonneeDe(arr.i, arr.j)[1]);
+            parent[voisin] = courant;
+            tasPousser(tas, f, voisin);
+          }
+        }
+      }
+      return null; // Aucun chemin trouvé (ex. point au milieu d'un bâtiment)
+    }
+
+    /**
+     * La ligne droite entre deux points est-elle dégagée d'obstacles ?
+     */
+    function ligneLibre(lat1, lng1, lat2, lng2) {
+      const d = distanceMetres(lat1, lng1, lat2, lng2);
+      const nbEchantillons = Math.max(1, Math.ceil(d / (COTE_CELLULE / 2)));
+      for (let s = 0; s <= nbEchantillons; s++) {
+        const t = s / nbEchantillons;
+        if (estSurObstacle(lat1 + (lat2 - lat1) * t, lng1 + (lng2 - lng1) * t)) {
+          return false;
+        }
+      }
+      return true;
+    }
+
+    /**
+     * Lissage du chemin : on saute les points intermédiaires si la ligne de
+     * vue est dégagée ("tir à la corde"), pour un mouvement naturel.
+     */
+    function lisserChemin(chemin, latDep, lngDep) {
+      const resultat = [];
+      let la = latDep, ln = lngDep, idx = 0;
+      while (idx < chemin.length) {
+        let lointain = idx;
+        for (let k = chemin.length - 1; k > idx; k--) {
+          if (ligneLibre(la, ln, chemin[k][0], chemin[k][1])) {
+            lointain = k;
+            break;
+          }
+        }
+        resultat.push(chemin[lointain]);
+        la = chemin[lointain][0];
+        ln = chemin[lointain][1];
+        idx = lointain + 1;
+      }
+      return resultat;
     }
 
     /**
@@ -211,39 +415,76 @@
           fillOpacity: 1
         }).addTo(map);
         marker.bindTooltip("Point " + (i + 1));
-        pointsRouges.push({ marker: marker, lat: p.lat, lng: p.lng });
+        pointsRouges.push({ marker: marker, lat: p.lat, lng: p.lng, chemin: null });
       }
     }
 
     /**
-     * Déplace un point vers la position à la vitesse de 5 km/h.
-     * Si le point atteint la position, il est replacé aléatoirement (hors obstacles).
-     * Si le nouveau point tombe sur un bâtiment ou de l'eau, il ne bouge pas ce tour.
+     * Déplace un point vers la position à la vitesse de 5 km/h, en contournant
+     * les bâtiments et l'eau grâce à A*. Si le point atteint ma position, il
+     * est replacé aléatoirement (hors obstacles).
      */
-    async function avancerPoint(point, lat, lng) {
-      const distance = distanceMetres(point.lat, point.lng, lat, lng);
+    async function avancerPoint(point, latCible, lngCible) {
       const avance = VITESSE_MS * (INTERVALLE_MS / 1000); // Distance parcourue en 1 s
 
-      if (distance <= avance) {
-        // Le point a atteint ma position : nouvelle position aléatoire
-        point.lat = lat;
-        point.lng = lng;
-        await majSurcharge(lat, lng);
-        const p = pointLibreAleatoire(lat, lng);
-        point.lat = p.lat;
-        point.lng = p.lng;
-      } else {
-        const ratio = avance / distance;
-        const nouveauLat = point.lat + (lat - point.lat) * ratio;
-        const nouveauLng = point.lng + (lng - point.lng) * ratio;
-        if (!estSurObstacle(nouveauLat, nouveauLng)) {
-          point.lat = nouveauLat;
-          point.lng = nouveauLng;
-        }
-        // Sinon : obstacle sur la trajectoire, le point attend ce tour
+      // Recalcul du chemin à chaque seconde (la cible bouge)
+      let chemin = null;
+      if (maillage) {
+        const brut = chercherChemin(point.lat, point.lng, latCible, lngCible);
+        if (brut) chemin = lisserChemin(brut, point.lat, point.lng);
       }
 
-      point.marker.setLatLng([point.lat, point.lng]);
+      let la = point.lat, ln = point.lng;
+      let reste = avance;
+
+      if (chemin) {
+        // Suivre le chemin étape par étape
+        for (let k = 0; k < chemin.length && reste > 0; k++) {
+          const dSeg = distanceMetres(la, ln, chemin[k][0], chemin[k][1]);
+          if (dSeg <= 0) continue;
+          if (dSeg <= reste) {
+            la = chemin[k][0];
+            ln = chemin[k][1];
+            reste -= dSeg;
+          } else {
+            const t = reste / dSeg;
+            la += (chemin[k][0] - la) * t;
+            ln += (chemin[k][1] - ln) * t;
+            reste = 0;
+          }
+        }
+        // Dernier tronçon direct si la ligne de vue vers ma position est dégagée
+        const dTotal = distanceMetres(la, ln, latCible, lngCible);
+        if (reste > 0 && dTotal > 0 && ligneLibre(la, ln, latCible, lngCible)) {
+          const t = Math.min(1, reste / dTotal);
+          la += (latCible - la) * t;
+          ln += (lngCible - ln) * t;
+        }
+      } else if (distanceMetres(la, ln, latCible, lngCible) > 0) {
+        // Pas de maillage / pas de chemin : marche directe si le point est libre
+        const dTotal = distanceMetres(la, ln, latCible, lngCible);
+        const t = Math.min(1, avance / dTotal);
+        const laN = la + (latCible - la) * t;
+        const lnN = ln + (lngCible - ln) * t;
+        if (dTotal <= avance || !estSurObstacle(laN, lnN)) {
+          la = laN;
+          ln = lnN;
+        }
+      }
+
+      // Le point a atteint ma position : nouvelle position aléatoire, hors obstacles
+      if (distanceMetres(la, ln, latCible, lngCible) <= avance) {
+        la = latCible;
+        ln = lngCible;
+        await majSurcharge(latCible, lngCible);
+        const p = pointLibreAleatoire(latCible, lngCible);
+        la = p.lat;
+        ln = p.lng;
+      }
+
+      point.lat = la;
+      point.lng = ln;
+      point.marker.setLatLng([la, ln]);
     }
 
     /**
@@ -292,7 +533,7 @@
         }).addTo(map);
       }
 
-      // Les 3 points avancent vers ma position à 5 km/h
+      // Les 3 points avancent vers ma position à 5 km/h, en contournant les obstacles
       for (const point of pointsRouges) {
         await avancerPoint(point, lat, lng);
       }
