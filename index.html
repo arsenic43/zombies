@@ -232,11 +232,32 @@
      * Charge les polygones des bâtiments et de l'eau dans un rayon de 60 m
      * autour de la position, puis reconstruit le maillage.
      * - Cache mémoire valable tant que l'on n'a pas bougé de plus de 25 m ;
-     * - Cache de session pour éviter à nouveau la requête au rechargement ;
-     * - 2 miroirs primaires Overpass interrogés en parallèle (premier succès gagne),
-     *   puis les miroirs restants séquentiellement ;
+     * - Cache local (localStorage) valable 24 h, et secours même périmé ;
+     * - 2 miroirs primaires Overpass interrogés en parallèle (premier succès
+     *   gagne, jusqu'à 30 s), puis POST retenté en GET (certains réseaux
+     *   mobiles le filtrent), puis miroirs secondaires séquentiels ;
      * - Pause d'une minute après un échec complet (anti-cascade).
      */
+    const DUREE_VIE_CACHE_MS = 24 * 3600 * 1000;
+
+    function lireCacheLocal(cle) {
+      try {
+        const brut = localStorage.getItem(cle);
+        if (!brut) return null;
+        const objet = JSON.parse(brut);
+        if (!objet || !Array.isArray(objet.polygones) || !objet.polygones.length) return null;
+        return { polygones: objet.polygones, ageMs: Date.now() - (objet.quand || 0) };
+      } catch (erreur) {
+        return null;
+      }
+    }
+
+    function ecrireCacheLocal(cle, polygones) {
+      try {
+        localStorage.setItem(cle, JSON.stringify({ quand: Date.now(), polygones: polygones }));
+      } catch (erreur) { /* quota dépassé ou mode privé : on ignore */ }
+    }
+
     async function majSurcharge(lat, lng) {
       // Cache mémoire encore valable ?
       if (centreGeometrie &&
@@ -255,24 +276,18 @@
         return;
       }
 
-      // Cache de session (résiste au rechargement de la page)
-      const cleSession = "surcharge-osm:" + lat.toFixed(3) + ":" + lng.toFixed(3);
-      try {
-        const brut = sessionStorage.getItem(cleSession);
-        if (brut) {
-          const polygones = JSON.parse(brut);
-          if (Array.isArray(polygones) && polygones.length) {
-            console.info("[Surcharge OSM] restaurée depuis le cache de session");
-            majEtat("osm", "ok", "Base OSM : restaurée du cache");
-            appliquerPolygones(polygones, lat, lng);
-            return;
-          }
-        }
-      } catch (erreur) {
-        // sessionStorage indisponible (ex. lecture en file://) : on ignore
+      // Cache local (résiste au rechargement et à la fermeture du navigateur)
+      const cleCache = "surcharge-osm:" + lat.toFixed(3) + ":" + lng.toFixed(3);
+      const depuisCache = lireCacheLocal(cleCache);
+      if (depuisCache && depuisCache.ageMs < DUREE_VIE_CACHE_MS) {
+        console.info("[Surcharge OSM] restaurée depuis le cache local (" +
+                     Math.round(depuisCache.ageMs / 60000) + " min)");
+        majEtat("osm", "ok", "Base OSM : cache local");
+        appliquerPolygones(depuisCache.polygones, lat, lng);
+        return;
       }
 
-      chargementEnCours = chargerSurcharge(lat, lng, cleSession);
+      chargementEnCours = chargerSurcharge(lat, lng, cleCache, depuisCache);
       try {
         await chargementEnCours;
       } finally {
@@ -293,18 +308,19 @@
     }
 
     /**
-     * Requête sur un miroir Overpass. Renvoie le tableau de polygones, ou lève.
-     * POST sans en-tête personnalisé : requête « simple » sans preflight CORS.
+     * Un appel Overpass : POST (ou GET) avec garde-temps.
      */
-    async function tenterEndpoint(url, requete, dureeMax) {
+    async function appelOverpass(url, methode, requete, dureeMax) {
       const controleur = new AbortController();
       const minuteur = setTimeout(() => controleur.abort(), dureeMax);
       try {
-        const reponse = await fetch(url, {
-          method: "POST",
-          body: "data=" + encodeURIComponent(requete),
-          signal: controleur.signal
-        });
+        const options = { method: methode, signal: controleur.signal };
+        if (methode === "POST") {
+          options.body = "data=" + encodeURIComponent(requete);
+        } else {
+          url = url + "?data=" + encodeURIComponent(requete);
+        }
+        const reponse = await fetch(url, options);
         if (!reponse.ok) throw new Error("HTTP " + reponse.status);
         const donnees = await reponse.json();
         const polygones = (donnees.elements || [])
@@ -314,6 +330,23 @@
         return polygones;
       } finally {
         clearTimeout(minuteur);
+      }
+    }
+
+    /**
+     * Requête sur un miroir Overpass : d'abord en POST, puis en GET si échec
+     * (certains réseaux mobiles filtrent le POST). Renvoie les polygones ou lève.
+     */
+    async function tenterEndpoint(url, requete, dureeMax) {
+      const debut = Date.now();
+      try {
+        return await appelOverpass(url, "POST", requete, dureeMax);
+      } catch (erreur) {
+        const reste = dureeMax - (Date.now() - debut);
+        if (reste < 3000) throw erreur;
+        console.warn("[Overpass] POST échoué sur " + new URL(url).host + " (" +
+                     erreur.message + "), nouvel essai en GET");
+        return await appelOverpass(url, "GET", requete, reste);
       }
     }
 
@@ -337,9 +370,9 @@
      * Effectue la requête Overpass d'abord en course entre les deux miroirs
      * primaires, puis séquentiellement sur les miroirs restants.
      */
-    async function chargerSurcharge(lat, lng, cleSession) {
+    async function chargerSurcharge(lat, lng, cleCache) {
       majEtat("osm", "attente", "Base OSM : chargement…");
-      const requete = "[out:json][timeout:8];(" +
+      const requete = "[out:json][timeout:25];(" +
         'way["building"](around:60,' + lat + "," + lng + ");" +
         'way["natural"="water"](around:60,' + lat + "," + lng + ");" +
         'way["waterway"="riverbank"](around:60,' + lat + "," + lng + ");" +
@@ -351,12 +384,12 @@
       const primaires = ENDPOINTS_OVERPASS.slice(0, 2);
       try {
         const polygones = await courseSucces(
-          primaires.map(url => tenterEndpoint(url, requete, 12000))
+          primaires.map(url => tenterEndpoint(url, requete, 30000))
         );
         console.info("[Surcharge OSM] chargée en " + (Date.now() - t0) + " ms " +
                      "(" + polygones.length + " polygones)");
         majEtat("osm", "ok", "Base OSM : à jour");
-        try { sessionStorage.setItem(cleSession, JSON.stringify(polygones)); } catch (erreur) {}
+        ecrireCacheLocal(cleCache, polygones);
         appliquerPolygones(polygones, lat, lng);
         return;
       } catch (erreur) {
@@ -369,11 +402,11 @@
       for (const url of secondaires) {
         try {
           const tReq = Date.now();
-          const polygones = await tenterEndpoint(url, requete, 12000);
+          const polygones = await tenterEndpoint(url, requete, 20000);
           console.info("[Surcharge OSM] chargée en " + (Date.now() - tReq) + " ms via " +
                        new URL(url).host + " (" + polygones.length + " polygones)");
           majEtat("osm", "ok", "Base OSM : à jour (" + new URL(url).host + ")");
-          try { sessionStorage.setItem(cleSession, JSON.stringify(polygones)); } catch (erreur) {}
+          ecrireCacheLocal(cleCache, polygones);
           appliquerPolygones(polygones, lat, lng);
           return;
         } catch (erreur) {
@@ -381,8 +414,16 @@
         }
       }
 
-      // 3) Tout a échoué : on marque la pause pour ne pas marteler les serveurs
+      // 3) Tout a échoué : secours avec un cache même périmé, sinon pause
       dernierEchecComplet = Date.now();
+      if (depuisCache) {
+        console.warn("[Surcharge OSM] tous les serveurs Overpass sont indisponibles : " +
+                     "utilisation du cache local ancien (âge " +
+                     Math.round(depuisCache.ageMs / 60000) + " min)");
+        majEtat("osm", "attente", "Base OSM : cache ancien (indisponible)");
+        appliquerPolygones(depuisCache.polygones, lat, lng);
+        return;
+      }
       console.warn("[Surcharge OSM] tous les serveurs Overpass sont indisponibles : " +
                    "nouvelle tentative dans 1 minute. Points aléatoires « simples » en attendant.");
       majEtat("osm", "echec", "Base OSM : indisponible");
