@@ -43,10 +43,25 @@
     #message.hidden {
       display: none;
     }
+    /* Bandeau discret d'état de la base OSM (haut à gauche) */
+    #etat-donnees {
+      position: absolute;
+      top: 8px;
+      left: 8px;
+      z-index: 1000;
+      background: rgba(255, 255, 255, 0.85);
+      border-radius: 4px;
+      padding: 3px 8px;
+      font-family: sans-serif;
+      font-size: 11px;
+      color: #444;
+      pointer-events: none;
+    }
   </style>
 </head>
 <body>
   <div id="map"></div>
+  <div id="etat-donnees">Base OSM : en attente…</div>
   <div id="message">En attente de votre position…<br>Veuillez autoriser la géolocalisation.</div>
 
   <script>
@@ -223,6 +238,7 @@
           const polygones = JSON.parse(brut);
           if (Array.isArray(polygones) && polygones.length) {
             console.info("[Surcharge OSM] restaurée depuis le cache de session");
+            definirEtatBase("Base OSM : restaurée du cache");
             appliquerPolygones(polygones, lat, lng);
             return;
           }
@@ -237,6 +253,14 @@
       } finally {
         chargementEnCours = null;
       }
+    }
+
+    /**
+     * Met à jour le bandeau d'état de la base OSM.
+     */
+    function definirEtatBase(texte) {
+      const zone = document.getElementById("etat-donnees");
+      if (zone) zone.textContent = texte;
     }
 
     /**
@@ -285,6 +309,7 @@
      * primaires, puis séquentiellement sur les miroirs restants.
      */
     async function chargerSurcharge(lat, lng, cleSession) {
+      definirEtatBase("Base OSM : chargement…");
       const requete = "[out:json][timeout:8];(" +
         'way["building"](around:60,' + lat + "," + lng + ");" +
         'way["natural"="water"](around:60,' + lat + "," + lng + ");" +
@@ -301,6 +326,7 @@
         );
         console.info("[Surcharge OSM] chargée en " + (Date.now() - t0) + " ms " +
                      "(" + polygones.length + " polygones)");
+        definirEtatBase("Base OSM : à jour");
         try { sessionStorage.setItem(cleSession, JSON.stringify(polygones)); } catch (erreur) {}
         appliquerPolygones(polygones, lat, lng);
         return;
@@ -317,6 +343,7 @@
           const polygones = await tenterEndpoint(url, requete, 12000);
           console.info("[Surcharge OSM] chargée en " + (Date.now() - tReq) + " ms via " +
                        new URL(url).host + " (" + polygones.length + " polygones)");
+          definirEtatBase("Base OSM : à jour (" + new URL(url).host + ")");
           try { sessionStorage.setItem(cleSession, JSON.stringify(polygones)); } catch (erreur) {}
           appliquerPolygones(polygones, lat, lng);
           return;
@@ -329,6 +356,7 @@
       dernierEchecComplet = Date.now();
       console.warn("[Surcharge OSM] tous les serveurs Overpass sont indisponibles : " +
                    "nouvelle tentative dans 1 minute. Points aléatoires « simples » en attendant.");
+      definirEtatBase("Base OSM : indisponible");
       geometrieDisponible = false;
       polygonesBbox = [];
       maillage = null;
@@ -356,6 +384,14 @@
       const t0 = Date.now();
       construireMaillage(lat, lng);
       console.info("[Surcharge OSM] maillage recalculé en " + (Date.now() - t0) + " ms");
+
+      // La base vient d'arriver (ou a changé) : les points mal placés sont
+      // automatiquement repositionnés hors bâtiments/plans d'eau.
+      if (pointsRouges.length) {
+        const latCible = dernierePosition ? dernierePosition.coords.latitude : lat;
+        const lngCible = dernierePosition ? dernierePosition.coords.longitude : lng;
+        revaliderPoints(latCible, lngCible);
+      }
     }
 
     /**
@@ -550,10 +586,11 @@
     }
 
     /**
-     * Crée les 3 points rouges une première fois (hors obstacles).
+     * Crée immédiatement les 3 points rouges (mode aléatoire simple, sans
+     * attendre la base OSM : l'affichage reste instantané), puis charge la
+     * surcharge OSM en arrière-plan et revalide ensuite les positions.
      */
     async function creerPoints(lat, lng) {
-      await majSurcharge(lat, lng);
       for (let i = 0; i < NB_POINTS; i++) {
         const p = pointLibreAleatoire(lat, lng);
         const marker = L.circleMarker([p.lat, p.lng], {
@@ -564,7 +601,26 @@
           fillOpacity: 1
         }).addTo(map);
         marker.bindTooltip("Point " + (i + 1));
-        pointsRouges.push({ marker: marker, lat: p.lat, lng: p.lng, chemin: null });
+        pointsRouges.push({ marker: marker, lat: p.lat, lng: p.lng });
+      }
+      // La base OSM arrive plus tard : dès qu'elle est disponible, les points
+      // éventuellement mal placés sont repositionnés automatiquement
+      // (hook dans appliquerPolygones).
+      majSurcharge(lat, lng);
+    }
+
+    /**
+     * Une fois la base OSM disponible (ou rafraîchie), remplace les points qui
+     * se trouvent sur un bâtiment ou un plan d'eau par des tirages valides.
+     */
+    function revaliderPoints(lat, lng) {
+      for (const point of pointsRouges) {
+        if (estSurObstacle(point.lat, point.lng)) {
+          const p = pointLibreAleatoire(lat, lng);
+          point.lat = p.lat;
+          point.lng = p.lng;
+          point.marker.setLatLng([p.lat, p.lng]);
+        }
       }
     }
 
