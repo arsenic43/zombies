@@ -799,12 +799,16 @@
 
     async function verifierVersion() {
       try {
-        const rDeploy = await fetch("https://api.github.com/repos/" + DEPOT + "/deployments?environment=github-pages&per_page=1");
+        const rDeploy = await fetch(
+          "https://api.github.com/repos/" + DEPOT + "/deployments?environment=github-pages&per_page=1",
+          { cache: "no-store" }
+        );
         if (!rDeploy.ok) throw new Error("API");
         const deploiements = await rDeploy.json();
         const dejaDeploye = deploiements.length ? deploiements[0].sha.slice(0, 7) : null;
 
-        const rCommit = await fetch("https://api.github.com/repos/" + DEPOT + "/commits/main");
+        const rCommit = await fetch("https://api.github.com/repos/" + DEPOT + "/commits/main",
+                                    { cache: "no-store" });
         if (!rCommit.ok) throw new Error("API");
         const dernier = (await rCommit.json()).sha.slice(0, 7);
 
