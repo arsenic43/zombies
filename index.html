@@ -43,25 +43,50 @@
     #message.hidden {
       display: none;
     }
-    /* Bandeau discret d'état de la base OSM (haut à gauche) */
-    #etat-donnees {
+    /* Panneau d'état (haut à gauche) : pastille couleur + intitulé par étape */
+    #etat {
       position: absolute;
       top: 8px;
       left: 8px;
       z-index: 1000;
-      background: rgba(255, 255, 255, 0.85);
-      border-radius: 4px;
-      padding: 3px 8px;
+      background: rgba(255, 255, 255, 0.88);
+      border-radius: 6px;
+      padding: 6px 10px;
       font-family: sans-serif;
       font-size: 11px;
-      color: #444;
+      line-height: 18px;
+      color: #333;
       pointer-events: none;
+      box-shadow: 0 1px 4px rgba(0, 0, 0, 0.15);
+    }
+    .point {
+      display: inline-block;
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      margin-right: 6px;
+      vertical-align: middle;
+    }
+    .point.ok {
+      background: #2e7d32;
+    }
+    .point.attente {
+      background: #e69b00;
+    }
+    .point.echec {
+      background: #d32f2f;
     }
   </style>
 </head>
 <body>
   <div id="map"></div>
-  <div id="etat-donnees">Base OSM : en attente…</div>
+  <div id="etat">
+    <div class="ligne"><span class="point attente"></span><span id="etat-carte">Carte : chargement…</span></div>
+    <div class="ligne"><span class="point attente"></span><span id="etat-gps">GPS : en attente…</span></div>
+    <div class="ligne"><span class="point attente"></span><span id="etat-osm">Base OSM : en attente…</span></div>
+    <div class="ligne"><span class="point attente"></span><span id="etat-points">Points : en attente GPS…</span></div>
+    <div class="ligne"><span class="point attente"></span><span id="etat-version">Version : vérification…</span></div>
+  </div>
   <div id="message">En attente de votre position…<br>Veuillez autoriser la géolocalisation.</div>
 
   <script>
@@ -238,7 +263,7 @@
           const polygones = JSON.parse(brut);
           if (Array.isArray(polygones) && polygones.length) {
             console.info("[Surcharge OSM] restaurée depuis le cache de session");
-            definirEtatBase("Base OSM : restaurée du cache");
+            majEtat("osm", "ok", "Base OSM : restaurée du cache");
             appliquerPolygones(polygones, lat, lng);
             return;
           }
@@ -256,11 +281,15 @@
     }
 
     /**
-     * Met à jour le bandeau d'état de la base OSM.
+     * Met à jour une ligne du panneau d'état :
+     * niveau = "ok" | "attente" | "echec" (couleur de la pastille).
      */
-    function definirEtatBase(texte) {
-      const zone = document.getElementById("etat-donnees");
+    function majEtat(id, niveau, texte) {
+      const zone = document.getElementById("etat-" + id);
       if (zone) zone.textContent = texte;
+      const ligne = zone ? zone.closest(".ligne") : null;
+      const point = ligne ? ligne.querySelector(".point") : null;
+      if (point) point.className = "point " + niveau;
     }
 
     /**
@@ -309,7 +338,7 @@
      * primaires, puis séquentiellement sur les miroirs restants.
      */
     async function chargerSurcharge(lat, lng, cleSession) {
-      definirEtatBase("Base OSM : chargement…");
+      majEtat("osm", "attente", "Base OSM : chargement…");
       const requete = "[out:json][timeout:8];(" +
         'way["building"](around:60,' + lat + "," + lng + ");" +
         'way["natural"="water"](around:60,' + lat + "," + lng + ");" +
@@ -326,7 +355,7 @@
         );
         console.info("[Surcharge OSM] chargée en " + (Date.now() - t0) + " ms " +
                      "(" + polygones.length + " polygones)");
-        definirEtatBase("Base OSM : à jour");
+        majEtat("osm", "ok", "Base OSM : à jour");
         try { sessionStorage.setItem(cleSession, JSON.stringify(polygones)); } catch (erreur) {}
         appliquerPolygones(polygones, lat, lng);
         return;
@@ -343,7 +372,7 @@
           const polygones = await tenterEndpoint(url, requete, 12000);
           console.info("[Surcharge OSM] chargée en " + (Date.now() - tReq) + " ms via " +
                        new URL(url).host + " (" + polygones.length + " polygones)");
-          definirEtatBase("Base OSM : à jour (" + new URL(url).host + ")");
+          majEtat("osm", "ok", "Base OSM : à jour (" + new URL(url).host + ")");
           try { sessionStorage.setItem(cleSession, JSON.stringify(polygones)); } catch (erreur) {}
           appliquerPolygones(polygones, lat, lng);
           return;
@@ -356,7 +385,7 @@
       dernierEchecComplet = Date.now();
       console.warn("[Surcharge OSM] tous les serveurs Overpass sont indisponibles : " +
                    "nouvelle tentative dans 1 minute. Points aléatoires « simples » en attendant.");
-      definirEtatBase("Base OSM : indisponible");
+      majEtat("osm", "echec", "Base OSM : indisponible");
       geometrieDisponible = false;
       polygonesBbox = [];
       maillage = null;
@@ -603,6 +632,7 @@
         marker.bindTooltip("Point " + (i + 1));
         pointsRouges.push({ marker: marker, lat: p.lat, lng: p.lng });
       }
+      majEtat("points", "ok", "Points : " + NB_POINTS + " affichés");
       // La base OSM arrive plus tard : dès qu'elle est disponible, les points
       // éventuellement mal placés sont repositionnés automatiquement
       // (hook dans appliquerPolygones).
@@ -701,6 +731,8 @@
       const lat = dernierePosition.coords.latitude;
       const lng = dernierePosition.coords.longitude;
 
+      majEtat("gps", "ok", "GPS : OK (±" + Math.round(dernierePosition.coords.accuracy || 0) + " m)");
+
       document.getElementById("message").classList.add("hidden");
 
       // Première réception de la position : zoom maximum, centré sur moi
@@ -756,6 +788,35 @@
       document.getElementById("message").classList.remove("hidden");
       document.getElementById("message").innerHTML =
         "<strong>Erreur :</strong><br>" + (messages[erreur.code] || erreur.message);
+      majEtat("gps", "echec", "GPS : erreur (code " + erreur.code + ")");
+    }
+
+    /**
+     * Version : compare le dernier push (commit main) avec le commit réellement
+     * déployé par GitHub Pages (API deployments, environnement github-pages).
+     */
+    const DEPOT = "arsenic43/zombies";
+
+    async function verifierVersion() {
+      try {
+        const rDeploy = await fetch("https://api.github.com/repos/" + DEPOT + "/deployments?environment=github-pages&per_page=1");
+        if (!rDeploy.ok) throw new Error("API");
+        const deploiements = await rDeploy.json();
+        const dejaDeploye = deploiements.length ? deploiements[0].sha.slice(0, 7) : null;
+
+        const rCommit = await fetch("https://api.github.com/repos/" + DEPOT + "/commits/main");
+        if (!rCommit.ok) throw new Error("API");
+        const dernier = (await rCommit.json()).sha.slice(0, 7);
+
+        if (dejaDeploye === dernier) {
+          majEtat("version", "ok", "Version : " + dernier + " (site à jour)");
+        } else {
+          majEtat("version", "attente",
+                  "Version : déploiement en cours, dernier push " + dernier);
+        }
+      } catch (erreur) {
+        majEtat("version", "echec", "Version : vérification impossible");
+      }
     }
 
     // --- Suivi GPS : on garde la dernière position, l'affichage est actualisé chaque seconde ---
@@ -766,6 +827,8 @@
         { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }
       );
       setInterval(actualiserTout, INTERVALLE_MS);
+      majEtat("carte", "ok", "Carte : OK");
+      verifierVersion();
     } else {
       document.getElementById("message").innerHTML =
         "<strong>Erreur :</strong><br>Votre navigateur ne prend pas en charge la géolocalisation.";
