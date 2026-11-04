@@ -103,9 +103,21 @@
 
     // Cache des polygones "obstacles" (bâtiments + eau) autour de ma position
     let polygonesObstacles = [];     // [{ {lat, lon}, ... }, ...]
+    let polygonesBbox = [];          // Mêmes polygones + boîtes englobantes (filtre rapide)
     let centreGeometrie = null;      // Position pour laquelle le cache est valable
     let geometrieDisponible = false; // Surcharge chargée avec succès ?
     let maillage = null;             // Grille d'occupation {lat0, lng0, pasLat, pasLng, obstruees}
+
+    // Miroirs publics d'Overpass, essayés dans l'ordre en cas d'échec
+    const ENDPOINTS_OVERPASS = [
+      "https://overpass-api.de/api/interpreter",
+      "https://overpass.kumi.systems/api/interpreter",
+      "https://overpass.private.coffee/api/interpreter",
+      "https://maps.mail.ru/osm/tools/overpass/api/interpreter"
+    ];
+    let chargementEnCours = null;    // Requête en cours (évite les doublons)
+    let dernierEchecComplet = 0;     // Horodatage du dernier échec de tous les miroirs
+    const PAUSE_APRES_ECHECS_MS = 60000; // Pause après un échec complet (anti-cascade)
 
     /**
      * Distance en mètres entre deux points (lat/lng).
@@ -151,10 +163,16 @@
 
     /**
      * Le point est-il sur un bâtiment ou un plan d'eau (d'après le cache OSM) ?
+     * Une boîte englobante élimine d'abord la quasi-totalité des polygones,
+     * le test exact ne reste qu'en dernier recours.
      */
     function estSurObstacle(lat, lng) {
       if (!geometrieDisponible) return false; // Pas de données : on ne peut pas tester
-      return polygonesObstacles.some(p => pointDansPolygone(lat, lng, p));
+      for (const b of polygonesBbox) {
+        if (lat < b.minLat || lat > b.maxLat || lng < b.minLng || lng > b.maxLng) continue;
+        if (pointDansPolygone(lat, lng, b.polygone)) return true;
+      }
+      return false;
     }
 
     /**
@@ -171,42 +189,173 @@
     }
 
     /**
-     * Charge les polygones des bâtiments et de l'eau dans un rayon de 100 m
-     * autour de la position (API Overpass d'OpenStreetMap), puis reconstruit
-     * le maillage. Le cache ne bouge que si l'on s'est déplacé de plus de 25 m.
+     * Charge les polygones des bâtiments et de l'eau dans un rayon de 60 m
+     * autour de la position, puis reconstruit le maillage.
+     * - Cache mémoire valable tant que l'on n'a pas bougé de plus de 25 m ;
+     * - Cache de session pour éviter à nouveau la requête au rechargement ;
+     * - 2 miroirs primaires Overpass interrogés en parallèle (premier succès gagne),
+     *   puis les miroirs restants séquentiellement ;
+     * - Pause d'une minute après un échec complet (anti-cascade).
      */
     async function majSurcharge(lat, lng) {
+      // Cache mémoire encore valable ?
       if (centreGeometrie &&
           distanceMetres(centreGeometrie.lat, centreGeometrie.lng, lat, lng) < 25) {
-        return; // Cache encore valable
+        return;
+      }
+      // Une requête est déjà en cours : on attend simplement son résultat
+      // (pas de relance en rafale : un seul cascade à la fois)
+      if (chargementEnCours) {
+        await chargementEnCours;
+        return;
       }
 
-      const requete = "[out:json][timeout:15];(" +
-        'way["building"](around:100,' + lat + "," + lng + ");" +
-        'way["natural"="water"](around:100,' + lat + "," + lng + ");" +
-        'way["waterway"="riverbank"](around:100,' + lat + "," + lng + ");" +
-        ");out geom;";
+      // Échec complet récent : on attend la pause avant d'essayer à nouveau
+      if (Date.now() - dernierEchecComplet < PAUSE_APRES_ECHECS_MS) {
+        return;
+      }
 
+      // Cache de session (résiste au rechargement de la page)
+      const cleSession = "surcharge-osm:" + lat.toFixed(3) + ":" + lng.toFixed(3);
       try {
-        const reponse = await fetch("https://overpass-api.de/api/interpreter", {
+        const brut = sessionStorage.getItem(cleSession);
+        if (brut) {
+          const polygones = JSON.parse(brut);
+          if (Array.isArray(polygones) && polygones.length) {
+            console.info("[Surcharge OSM] restaurée depuis le cache de session");
+            appliquerPolygones(polygones, lat, lng);
+            return;
+          }
+        }
+      } catch (erreur) {
+        // sessionStorage indisponible (ex. lecture en file://) : on ignore
+      }
+
+      chargementEnCours = chargerSurcharge(lat, lng, cleSession);
+      try {
+        await chargementEnCours;
+      } finally {
+        chargementEnCours = null;
+      }
+    }
+
+    /**
+     * Requête sur un miroir Overpass. Renvoie le tableau de polygones, ou lève.
+     * POST sans en-tête personnalisé : requête « simple » sans preflight CORS.
+     */
+    async function tenterEndpoint(url, requete, dureeMax) {
+      const controleur = new AbortController();
+      const minuteur = setTimeout(() => controleur.abort(), dureeMax);
+      try {
+        const reponse = await fetch(url, {
           method: "POST",
-          headers: { "Content-Type": "application/x-www-form-urlencoded" },
-          body: "data=" + encodeURIComponent(requete)
+          body: "data=" + encodeURIComponent(requete),
+          signal: controleur.signal
         });
+        if (!reponse.ok) throw new Error("HTTP " + reponse.status);
         const donnees = await reponse.json();
-        polygonesObstacles = (donnees.elements || [])
+        const polygones = (donnees.elements || [])
           .filter(e => e.geometry && e.geometry.length > 2)
           .map(e => e.geometry);
-        centreGeometrie = { lat: lat, lng: lng };
-        geometrieDisponible = true;
-        construireMaillage(lat, lng);
-      } catch (erreur) {
-        // Overpass indisponible : les points resteront aléatoires "simples"
-        console.warn("Impossible de charger la surcharge OSM :", erreur);
-        geometrieDisponible = false;
-        polygonesObstacles = [];
-        maillage = null;
+        if (!polygones.length) throw new Error("Réponse vide");
+        return polygones;
+      } finally {
+        clearTimeout(minuteur);
       }
+    }
+
+    /**
+     * Course entre plusieurs requêtes : le premier succès gagne.
+     */
+    function courseSucces(promesses) {
+      return new Promise((resoudre, rejeter) => {
+        let echecs = 0;
+        if (!promesses.length) rejeter(new Error("Aucune requête"));
+        for (const promesse of promesses) {
+          promesse.then(resoudre, () => {
+            echecs++;
+            if (echecs === promesses.length) rejeter(new Error("Tous les miroirs primaires en échec"));
+          });
+        }
+      });
+    }
+
+    /**
+     * Effectue la requête Overpass d'abord en course entre les deux miroirs
+     * primaires, puis séquentiellement sur les miroirs restants.
+     */
+    async function chargerSurcharge(lat, lng, cleSession) {
+      const requete = "[out:json][timeout:8];(" +
+        'way["building"](around:60,' + lat + "," + lng + ");" +
+        'way["natural"="water"](around:60,' + lat + "," + lng + ");" +
+        'way["waterway"="riverbank"](around:60,' + lat + "," + lng + ");" +
+        ");out geom;";
+
+      const t0 = Date.now();
+
+      // 1) Course entre les miroirs primaires : le premier bon résultat gagne
+      const primaires = ENDPOINTS_OVERPASS.slice(0, 2);
+      try {
+        const polygones = await courseSucces(
+          primaires.map(url => tenterEndpoint(url, requete, 12000))
+        );
+        console.info("[Surcharge OSM] chargée en " + (Date.now() - t0) + " ms " +
+                     "(" + polygones.length + " polygones)");
+        try { sessionStorage.setItem(cleSession, JSON.stringify(polygones)); } catch (erreur) {}
+        appliquerPolygones(polygones, lat, lng);
+        return;
+      } catch (erreur) {
+        console.warn("[Surcharge OSM] miroirs primaires en échec après " +
+                     (Date.now() - t0) + " ms : " + erreur.message);
+      }
+
+      // 2) Miroirs restants, un par un
+      const secondaires = ENDPOINTS_OVERPASS.slice(2);
+      for (const url of secondaires) {
+        try {
+          const tReq = Date.now();
+          const polygones = await tenterEndpoint(url, requete, 12000);
+          console.info("[Surcharge OSM] chargée en " + (Date.now() - tReq) + " ms via " +
+                       new URL(url).host + " (" + polygones.length + " polygones)");
+          try { sessionStorage.setItem(cleSession, JSON.stringify(polygones)); } catch (erreur) {}
+          appliquerPolygones(polygones, lat, lng);
+          return;
+        } catch (erreur) {
+          console.warn("[Surcharge OSM] échec via " + new URL(url).host + " : " + erreur.message);
+        }
+      }
+
+      // 3) Tout a échoué : on marque la pause pour ne pas marteler les serveurs
+      dernierEchecComplet = Date.now();
+      console.warn("[Surcharge OSM] tous les serveurs Overpass sont indisponibles : " +
+                   "nouvelle tentative dans 1 minute. Points aléatoires « simples » en attendant.");
+      geometrieDisponible = false;
+      polygonesBbox = [];
+      maillage = null;
+    }
+
+    /**
+     * Enregistre les polygones avec leur boîte englobante, puis reconstruit
+     * le maillage (chronométré, visible dans la console).
+     */
+    function appliquerPolygones(polygones, lat, lng) {
+      polygonesObstacles = polygones;
+      polygonesBbox = polygones.map(polygone => {
+        let minLat = Infinity, maxLat = -Infinity, minLng = Infinity, maxLng = -Infinity;
+        for (const pt of polygone) {
+          if (pt.lat < minLat) minLat = pt.lat;
+          if (pt.lat > maxLat) maxLat = pt.lat;
+          if (pt.lon < minLng) minLng = pt.lon;
+          if (pt.lon > maxLng) maxLng = pt.lon;
+        }
+        return { minLat: minLat, maxLat: maxLat, minLng: minLng, maxLng: maxLng, polygone: polygone };
+      });
+      centreGeometrie = { lat: lat, lng: lng };
+      geometrieDisponible = true;
+
+      const t0 = Date.now();
+      construireMaillage(lat, lng);
+      console.info("[Surcharge OSM] maillage recalculé en " + (Date.now() - t0) + " ms");
     }
 
     /**
