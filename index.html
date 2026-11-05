@@ -43,6 +43,24 @@
     #message.hidden {
       display: none;
     }
+    /* Halo rouge des bords de la carte : calque au-dessus des tuiles, sous le
+       panneau ; dégradé radial transparent au centre → rouge sombre aux bords.
+       L'opacité est pilotée en JS selon la distance du point rouge le plus
+       proche (progression continue via la transition). */
+    #halo {
+      position: absolute;
+      inset: 0;
+      z-index: 900;
+      pointer-events: none;
+      opacity: 0;
+      transition: opacity 0.7s linear;
+      background: radial-gradient(
+        circle at 50% 50%,
+        rgba(120, 0, 0, 0) 40%,
+        rgba(160, 0, 0, 0.35) 70%,
+        rgba(100, 0, 0, 0.85) 100%
+      );
+    }
     /* Panneau d'état (haut à gauche) : pastille couleur + intitulé par étape */
     #etat {
       position: absolute;
@@ -88,6 +106,7 @@
 </head>
 <body>
   <div id="map"></div>
+  <div id="halo"></div>
   <div id="etat">
     <div class="ligne"><span class="point attente"></span><span id="etat-carte">Carte : chargement…</span></div>
     <div class="ligne"><span class="point attente"></span><span id="etat-gps">GPS : en attente…</span></div>
@@ -1101,6 +1120,26 @@
     let dernierRappelProcheMS = 0;       // Dernier rappel « zombi proche »
     let dernierRappelMorduMS = 0;        // Dernier rappel « vous avez été mordu »
 
+    // --- Halo rouge des bords de la carte ---
+    const SEUIL_HALO_M = 50;             // Le halo apparaît quand un point entre dans ce disque
+    const calqueHalo = document.getElementById("halo");
+
+    /**
+     * Progression du halo : 0 à 50 m (entrée du point dans le disque) il
+     * s'effleure, puis il s'assombrit linéairement jusqu'au rattrapage.
+     * La transition CSS (0,7 s) lisse l'actualisation seconde par seconde.
+     */
+    function majHalo(latCible, lngCible) {
+      let plusProche = Infinity;
+      for (const point of pointsRouges) {
+        const d = distanceMetres(point.lat, point.lng, latCible, lngCible);
+        if (d < plusProche) plusProche = d;
+      }
+      const progression = plusProche >= SEUIL_HALO_M ? 0 :
+        Math.max(0, Math.min(1, 1 - plusProche / SEUIL_HALO_M));
+      calqueHalo.style.opacity = progression.toFixed(3);
+    }
+
     /**
      * Déblocage de la synthèse vocale au premier contact utilisateur
      * (les navigateurs n'autorisent pas le son avant une interaction).
@@ -1219,7 +1258,8 @@
         await avancerPoint(point, lat, lng);
       }
 
-      // Alerte vocale selon la distance du point le plus proche
+      // Halo rouge des bords + alerte vocale selon la distance du point le plus proche
+      majHalo(lat, lng);
       verifierAnnonces(lat, lng);
     }
 
