@@ -104,8 +104,10 @@
     "use strict";
 
     const ZOOM_MAX = 19;             // Zoom maximum pour les tuiles OpenStreetMap
-    const RAYON_METRES = 150;        // Rayon d'apparition des points aléatoires
-    const NB_POINTS = 3;             // Nombre de points à afficher
+    const RAYON_METRES = 150;        // Rayon d'apparition maximal des points
+    const RAYON_APPARITION_MIN_M = 50; // Distance minimale d'apparition des points
+    const NB_POINTS_MIN = 1;         // Nombre de points aléatoire, entre…
+    const NB_POINTS_MAX = 5;         // …1 et 5 (tiré à chaque vague d'apparition)
     const INTERVALLE_MS = 1000;      // Actualisation toutes les secondes
 
     // Vitesses prédéfinies des points rouges (curseur : 1 = lente, 2 = moyen, 3 = rapide)
@@ -151,7 +153,7 @@
     // --- État de l'application ---
     let carteInitialisee = false;    // Premier centrage sur la position GPS déjà fait ?
     let marqueurPosition = null;     // Rond bleu = ma position
-    let pointsRouges = [];           // Les 3 points rouges {marker, lat, lng}
+    let pointsRouges = [];           // Points rouges {marker, lat, lng} (1 à 5)
     let dernierePosition = null;     // Dernière position reçue du navigateur
 
     // Cache des polygones "obstacles" (bâtiments + eau) autour de ma position
@@ -189,12 +191,15 @@
     }
 
     /**
-     * Génère un point aléatoire (distribution uniforme) dans un disque
-     * de `rayon` mètres autour de (lat, lng).
+     * Génère un point aléatoire uniformément réparti en surface dans un
+     * anneau compris entre `rayonMin` et `rayonMax` mètres autour de (lat, lng).
+     * (sqrt sur le rayon : sinon les bords de l'anneau seraient plus denses.)
      */
-    function pointAleatoire(lat, lng, rayon) {
+    function pointAleatoire(lat, lng, rayonMax, rayonMin) {
+      const rMin = rayonMin || 0;
       const angle = Math.random() * 2 * Math.PI;
-      const distance = rayon * Math.sqrt(Math.random());
+      const distance = Math.sqrt(rMin * rMin +
+                                 Math.random() * (rayonMax * rayonMax - rMin * rMin));
       const dLat = (distance * Math.sin(angle)) / 111320;                            // ~111 320 m par degré de latitude
       const dLng = (distance * Math.cos(angle)) / (111320 * Math.cos(lat * Math.PI / 180));
       return { lat: lat + dLat, lng: lng + dLng };
@@ -277,9 +282,9 @@
      * Jusqu'à 20 tentatives ; en dernier recours, on garde la dernière proposition.
      */
     function pointLibreAleatoire(lat, lng) {
-      let proposition = pointAleatoire(lat, lng, RAYON_METRES);
+      let proposition = pointAleatoire(lat, lng, RAYON_METRES, RAYON_APPARITION_MIN_M);
       for (let essai = 0; essai < 20; essai++) {
-        proposition = pointAleatoire(lat, lng, RAYON_METRES);
+        proposition = pointAleatoire(lat, lng, RAYON_METRES, RAYON_APPARITION_MIN_M);
         if (!estSurObstacle(proposition.lat, proposition.lng)) break;
       }
       return proposition;
@@ -970,12 +975,15 @@
     }
 
     /**
-     * Crée immédiatement les 3 points rouges (mode aléatoire simple, sans
+     * Crée immédiatement les points rouges (mode aléatoire simple, sans
      * attendre la base OSM : l'affichage reste instantané), puis charge la
      * surcharge OSM en arrière-plan et revalide ensuite les positions.
+     * Le nombre de points est tiré au hasard à chaque vague : entre 1 et 5.
      */
     async function creerPoints(lat, lng) {
-      for (let i = 0; i < NB_POINTS; i++) {
+      const nbPoints = NB_POINTS_MIN +
+        Math.floor(Math.random() * (NB_POINTS_MAX - NB_POINTS_MIN + 1));
+      for (let i = 0; i < nbPoints; i++) {
         const p = pointLibreAleatoire(lat, lng);
         const marker = L.circleMarker([p.lat, p.lng], {
           radius: 8,
@@ -987,7 +995,7 @@
         marker.bindTooltip("Point " + (i + 1));
         pointsRouges.push({ marker: marker, lat: p.lat, lng: p.lng });
       }
-      majEtat("points", "ok", "Points : " + NB_POINTS + " affichés");
+      majEtat("points", "ok", "Points : " + nbPoints + " affichés");
       // La base OSM arrive plus tard : dès qu'elle est disponible, les points
       // éventuellement mal placés sont repositionnés automatiquement
       // (hook dans appliquerPolygones).
@@ -1206,7 +1214,7 @@
         majSurcharge(lat, lng);
       }
 
-      // Les 3 points avancent vers ma position à leur vitesse réglée, en contournant les obstacles
+      // Les points avancent vers ma position à leur vitesse réglée, en contournant les obstacles
       for (const point of pointsRouges) {
         await avancerPoint(point, lat, lng);
       }
