@@ -145,9 +145,10 @@
     let polygonesObstacles = [];     // [{ {lat, lon}, ... }, ...]
     let polygonesBbox = [];          // Mêmes polygones + boîtes englobantes (filtre rapide)
     let indexObstacles = null;       // Index spatial : clé de grille -> polygones locaux
-    let centreGeometrie = null;      // Position pour laquelle le cache est valable
+    let centreGeometrie = null;      // Position pour laquelle le maillage est valable
     let geometrieDisponible = false; // Surcharge chargée avec succès ?
     let maillage = null;             // Grille d'occupation {lat0, lng0, pasLat, pasLng, obstruees}
+    let zoneActive = null;           // Zone chargée {centreLat, centreLng, rayonMetres}
 
     // Miroirs publics d'Overpass, essayés dans l'ordre en cas d'échec
     const ENDPOINTS_OVERPASS = [
@@ -272,33 +273,101 @@
     }
 
     /**
-     * Charge les polygones des bâtiments et de l'eau dans un rayon de 60 m
-     * autour de la position, puis reconstruit le maillage.
-     * - Cache mémoire valable tant que l'on n'a pas bougé de plus de 25 m ;
-     * - Cache local (localStorage) valable 24 h, et secours même périmé ;
-     * - 2 miroirs primaires Overpass interrogés en parallèle (premier succès
-     *   gagne, jusqu'à 30 s), puis POST retenté en GET (certains réseaux
-     *   mobiles le filtrent), puis miroirs secondaires séquentiels ;
+     * Charge les polygones (bâtiments + eau) dans une zone de rayon 5 km autour
+     * de la position GPS détectée, puis reconstruit le maillage.
+     * - Zone déjà chargée : tant que le point GPS reste dedans, rien à refaire
+     *   (seul le maillage suit les déplacements) ;
+     * - Cache disque (IndexedDB) : une zone déjà téléchargée pour ce secteur est
+     *   réutilisée telle quelle (une zone de 5 km dépasse le quota de
+     *   localStorage) ;
+     * - Données figées IGN (Bois d'Arcy) : servent d'abord — c'est une zone
+     *   déjà « en cache », livrée avec l'application ;
+     * - Sinon téléchargement Overpass en 4 quadrants de 5 km (plus fiable
+     *   qu'une grosse requête unique), appliqué au fil de l'eau puis mémorisé ;
      * - Pause d'une minute après un échec complet (anti-cascade).
      */
-    const DUREE_VIE_CACHE_MS = 24 * 3600 * 1000;
+    const RAYON_ZONE_METRES = 5000;                  // Rayon de la zone autour du point GPS
+    const MARGE_ZONE_METRES = 250;                   // Marge de sécurité au bord de la zone
+    const DELAI_MAX_QUADRANT_MS = 170000;            // Garde-temps par tentative de quadrant
+    const DUREE_VIE_CACHE_MS = 7 * 24 * 3600 * 1000; // Fraîcheur du cache disque (7 jours)
+    const MAX_ZONES_CACHE = 2;                       // Nombre de zones gardées sur le disque
 
-    function lireCacheLocal(cle) {
+    let zoneCacheScan = 0;           // Dernier scan du cache disque (throttle 5 s)
+    let zoneCacheResultat = null;    // Résultat du dernier scan (null = rien de couvrant)
+    let resumeQuadrants = new Map(); // Quadrants obtenus pendant la session (reprise après échec)
+
+    // --- Cache disque des zones (IndexedDB : pas de limite de quota) ---
+    const NOM_BDD = "zombies-cartes";
+    const NOM_MAGASIN = "zones";
+    let promesseBDD = null;
+
+    function ouvrirBaseZone() {
+      if (promesseBDD) return promesseBDD;
+      promesseBDD = new Promise((resoudre, rejeter) => {
+        const demande = indexedDB.open(NOM_BDD, 1);
+        demande.onupgradeneeded = () => {
+          demande.result.createObjectStore(NOM_MAGASIN, { keyPath: "cle" });
+        };
+        demande.onsuccess = () => resoudre(demande.result);
+        demande.onerror = () => rejeter(demande.error || new Error("Ouverture impossible"));
+      });
+      return promesseBDD;
+    }
+
+    async function avecMagasin(mode, executer) {
+      const bdd = await ouvrirBaseZone();
+      return new Promise((resoudre, rejeter) => {
+        const tx = bdd.transaction(NOM_MAGASIN, mode);
+        const requete = executer(tx.objectStore(NOM_MAGASIN));
+        requete.onsuccess = () => resoudre(requete.result);
+        requete.onerror = () => rejeter(requete.error || new Error("Accès refusé"));
+      });
+    }
+
+    /** Mémorise la zone téléchargée et élimine les plus anciennes. */
+    async function enregistrerZoneCache(centreLat, centreLng, polygones) {
+      if (!polygones.length) return;
       try {
-        const brut = localStorage.getItem(cle);
-        if (!brut) return null;
-        const objet = JSON.parse(brut);
-        if (!objet || !Array.isArray(objet.polygones) || !objet.polygones.length) return null;
-        return { polygones: objet.polygones, ageMs: Date.now() - (objet.quand || 0) };
+        const entree = {
+          cle: "zone:" + centreLat.toFixed(2) + ":" + centreLng.toFixed(2),
+          centreLat: centreLat, centreLng: centreLng,
+          rayonMetres: RAYON_ZONE_METRES, quand: Date.now(),
+          donnees: JSON.stringify(polygones)
+        };
+        await avecMagasin("readwrite", magasin => magasin.put(entree));
+        const toutes = await avecMagasin("readonly", magasin => magasin.getAll());
+        toutes.sort((a, b) => b.quand - a.quand);
+        for (const vieille of toutes.slice(MAX_ZONES_CACHE)) {
+          await avecMagasin("readwrite", magasin => magasin.delete(vieille.cle));
+        }
+        console.info("[Base bâtiments] zone de 5 km mémorisée dans le cache (" +
+                     polygones.length + " objets)");
       } catch (erreur) {
-        return null;
+        console.warn("[Base bâtiments] cache disque non persistant :", erreur.message);
       }
     }
 
-    function ecrireCacheLocal(cle, polygones) {
+    /** Recherche en cache une zone couvrant la position (quel que soit son âge). */
+    async function lireZoneCacheCouvrante(lat, lng) {
       try {
-        localStorage.setItem(cle, JSON.stringify({ quand: Date.now(), polygones: polygones }));
-      } catch (erreur) { /* quota dépassé ou mode privé : on ignore */ }
+        const toutes = await avecMagasin("readonly", magasin => magasin.getAll());
+        let meilleure = null;
+        for (const entree of toutes) {
+          const rayon = (entree.rayonMetres || RAYON_ZONE_METRES) - MARGE_ZONE_METRES;
+          if (distanceMetres(entree.centreLat, entree.centreLng, lat, lng) >= rayon) continue;
+          if (!meilleure || entree.quand > meilleure.quand) meilleure = entree;
+        }
+        if (!meilleure) return null;
+        return {
+          centreLat: meilleure.centreLat, centreLng: meilleure.centreLng,
+          rayonMetres: meilleure.rayonMetres || RAYON_ZONE_METRES,
+          ageMs: Date.now() - meilleure.quand,
+          polygones: JSON.parse(meilleure.donnees)
+        };
+      } catch (erreur) {
+        console.warn("[Base bâtiments] cache disque illisible :", erreur.message);
+        return null;
+      }
     }
 
     // === Données figées intégrées (BD TOPO IGN, zone de Bois d'Arcy) ===
@@ -347,43 +416,99 @@
       return distanceMetres(donneesFigees.centreLat, donneesFigees.centreLng, lat, lng) < rayon;
     }
 
-    async function majSurcharge(lat, lng) {
-      // Cache mémoire encore valable ?
-      if (centreGeometrie &&
-          distanceMetres(centreGeometrie.lat, centreGeometrie.lng, lat, lng) < 25) {
-        return;
+    /**
+     * Déplacement à l'intérieur de la zone chargée : rien à télécharger, seul
+     * le maillage suit (à partir de 25 m de déplacement).
+     * Renvoie true si la position est toujours couverte.
+     */
+    function suivreDeplacement(lat, lng) {
+      if (!zoneActive) return false;
+      const rayonUtile = zoneActive.rayonMetres - MARGE_ZONE_METRES;
+      if (distanceMetres(zoneActive.centreLat, zoneActive.centreLng, lat, lng) >= rayonUtile) {
+        return false;
       }
+      if (!centreGeometrie ||
+          distanceMetres(centreGeometrie.lat, centreGeometrie.lng, lat, lng) >= 25) {
+        recentrerGeometrie(lat, lng);
+      }
+      return true;
+    }
+
+    async function majSurcharge(lat, lng) {
       // Une requête est déjà en cours : on attend simplement son résultat
-      // (pas de relance en rafale : un seul cascade à la fois)
+      // (pas de relance en rafale : une seule cascade à la fois)
       if (chargementEnCours) {
         await chargementEnCours;
         return;
       }
+
+      // La zone déjà chargée couvre-t-elle toujours ma position ? Alors rien
+      // à télécharger ; le maillage a déjà été recentré si besoin.
+      if (suivreDeplacement(lat, lng)) return;
 
       // Échec complet récent : on attend la pause avant d'essayer à nouveau
       if (Date.now() - dernierEchecComplet < PAUSE_APRES_ECHECS_MS) {
         return;
       }
 
-      // Cache local (résiste au rechargement et à la fermeture du navigateur)
-      const cleCache = "surcharge-osm:" + lat.toFixed(3) + ":" + lng.toFixed(3);
-      const depuisCache = lireCacheLocal(cleCache);
-      if (depuisCache && depuisCache.ageMs < DUREE_VIE_CACHE_MS) {
-        console.info("[Surcharge OSM] restaurée depuis le cache local (" +
-                     Math.round(depuisCache.ageMs / 60000) + " min)");
-        majEtat("osm", "ok", "Base bâtiments : cache local");
-        appliquerPolygones(depuisCache.polygones, lat, lng);
-        return;
-      }
-
       // Données figées intégrées à l'application (IGN BD TOPO, Bois d'Arcy 5 km)
       if (await dansZoneFige(lat, lng)) {
         majEtat("osm", "ok", "Base bâtiments : intégrée (IGN)");
-        appliquerPolygones(donneesFigees.polygones, lat, lng);
+        appliquerPolygones(donneesFigees.polygones, lat, lng, {
+          centreLat: donneesFigees.centreLat, centreLng: donneesFigees.centreLng,
+          rayonMetres: donneesFigees.rayonMetres
+        });
         return;
       }
 
-      chargementEnCours = chargerSurcharge(lat, lng, cleCache, depuisCache);
+      // Cache disque : la zone de ce secteur a-t-elle déjà été téléchargée ?
+      if (Date.now() - zoneCacheScan > 5000) {
+        zoneCacheScan = Date.now();
+        zoneCacheResultat = await lireZoneCacheCouvrante(lat, lng);
+      }
+      if (zoneCacheResultat && zoneCacheResultat.ageMs < DUREE_VIE_CACHE_MS) {
+        console.info("[Base bâtiments] restaurée depuis le cache local (" +
+                     Math.round(zoneCacheResultat.ageMs / 60000) + " min, " +
+                     zoneCacheResultat.polygones.length + " objets)");
+        majEtat("osm", "ok", "Base bâtiments : cache local (5 km)");
+        appliquerPolygones(zoneCacheResultat.polygones, lat, lng, zoneCacheResultat);
+        return;
+      }
+
+      // Téléchargement des données : zone de rayon 5 km autour de la position
+      majEtat("osm", "attente", "Base bâtiments : chargement (zone 5 km)…");
+      chargementEnCours = (async () => {
+        try {
+          const polygones = await chargerZoneReseau(lat, lng);
+          await enregistrerZoneCache(lat, lng, polygones);
+          resumeQuadrants.clear();
+          const pos = dernierePosition
+            ? dernierePosition.coords : { latitude: lat, longitude: lng };
+          majEtat("osm", "ok", "Base bâtiments : chargée (5 km)");
+          appliquerPolygones(polygones, pos.latitude, pos.longitude, {
+            centreLat: lat, centreLng: lng, rayonMetres: RAYON_ZONE_METRES
+          });
+        } catch (erreur) {
+          console.warn("[Base bâtiments] " + erreur.message);
+          dernierEchecComplet = Date.now();
+          const zoneAncienne = await lireZoneCacheCouvrante(lat, lng);
+          if (zoneAncienne) {
+            console.warn("[Base bâtiments] serveurs indisponibles : cache local ancien utilisé (âge " +
+                         Math.round(zoneAncienne.ageMs / 60000) + " min)");
+            majEtat("osm", "attente", "Base bâtiments : cache ancien (indisponible)");
+            appliquerPolygones(zoneAncienne.polygones, lat, lng, zoneAncienne);
+          } else {
+            console.warn("[Base bâtiments] nouvelle tentative dans 1 minute. " +
+                         "Points aléatoires « simples » en attendant.");
+            majEtat("osm", "echec", "Base bâtiments : indisponible");
+            geometrieDisponible = false;
+            polygonesBbox = [];
+            indexObstacles = null;
+            maillage = null;
+            zoneActive = null;
+          }
+        }
+      })();
       try {
         await chargementEnCours;
       } finally {
@@ -405,8 +530,9 @@
 
     /**
      * Un appel Overpass : POST (ou GET) avec garde-temps.
+     * `accepterVide` : une zone vierge (aucun bâtiment) n'est pas une erreur.
      */
-    async function appelOverpass(url, methode, requete, dureeMax) {
+    async function appelOverpass(url, methode, requete, dureeMax, accepterVide) {
       const controleur = new AbortController();
       const minuteur = setTimeout(() => controleur.abort(), dureeMax);
       try {
@@ -422,7 +548,10 @@
         const polygones = (donnees.elements || [])
           .filter(e => e.geometry && e.geometry.length > 2)
           .map(e => e.geometry);
-        if (!polygones.length) throw new Error("Réponse vide");
+        if (!polygones.length) {
+          if (accepterVide) return [];
+          throw new Error("Réponse vide");
+        }
         return polygones;
       } finally {
         clearTimeout(minuteur);
@@ -433,107 +562,119 @@
      * Requête sur un miroir Overpass : d'abord en POST, puis en GET si échec
      * (certains réseaux mobiles filtrent le POST). Renvoie les polygones ou lève.
      */
-    async function tenterEndpoint(url, requete, dureeMax) {
+    async function tenterEndpoint(url, requete, dureeMax, accepterVide) {
       const debut = Date.now();
       try {
-        return await appelOverpass(url, "POST", requete, dureeMax);
+        return await appelOverpass(url, "POST", requete, dureeMax, accepterVide);
       } catch (erreur) {
         const reste = dureeMax - (Date.now() - debut);
         if (reste < 3000) throw erreur;
         console.warn("[Overpass] POST échoué sur " + new URL(url).host + " (" +
                      erreur.message + "), nouvel essai en GET");
-        return await appelOverpass(url, "GET", requete, reste);
+        return await appelOverpass(url, "GET", requete, reste, accepterVide);
       }
     }
 
     /**
-     * Course entre plusieurs requêtes : le premier succès gagne.
+     * Télécharge la zone (carré de 10 km découpé en 4 quadrants de 5 km)
+     * autour de la position. Les quadrants sont appliqués au fil de l'eau :
+     * dès le premier reçu, le maillage autour de moi tient compte des obstacles
+     * de sa moitié de zone. Les polygones en double (bords limitrophes) sont
+     * dédoublonnés. Lève une erreur si un quadrant résiste à tous les miroirs.
      */
-    function courseSucces(promesses) {
-      return new Promise((resoudre, rejeter) => {
-        let echecs = 0;
-        if (!promesses.length) rejeter(new Error("Aucune requête"));
-        for (const promesse of promesses) {
-          promesse.then(resoudre, () => {
-            echecs++;
-            if (echecs === promesses.length) rejeter(new Error("Tous les miroirs primaires en échec"));
-          });
-        }
-      });
+    function cleGeometrie(polygone) {
+      return polygone.map(pt => pt.lat.toFixed(5) + "," + pt.lon.toFixed(5)).join("|");
     }
 
-    /**
-     * Effectue la requête Overpass d'abord en course entre les deux miroirs
-     * primaires, puis séquentiellement sur les miroirs restants.
-     */
-    async function chargerSurcharge(lat, lng, cleCache) {
-      majEtat("osm", "attente", "Base bâtiments : chargement…");
-      const requete = "[out:json][timeout:25];(" +
-        'way["building"](around:60,' + lat + "," + lng + ");" +
-        'way["natural"="water"](around:60,' + lat + "," + lng + ");" +
-        'way["waterway"="riverbank"](around:60,' + lat + "," + lng + ");" +
-        ");out geom;";
-
+    async function chargerZoneReseau(lat, lng) {
+      const demiLat = RAYON_ZONE_METRES / 111320;
+      const demiLng = RAYON_ZONE_METRES / (111320 * Math.cos(lat * Math.PI / 180));
+      const quadrants = [
+        [lat - demiLat, lng - demiLng, lat, lng],
+        [lat - demiLat, lng,            lat, lng + demiLng],
+        [lat,            lng - demiLng, lat + demiLat, lng],
+        [lat,            lng,           lat + demiLat, lng + demiLng]
+      ];
+      const cumul = [];
+      const vus = new Set();
       const t0 = Date.now();
 
-      // 1) Course entre les miroirs primaires : le premier bon résultat gagne
-      const primaires = ENDPOINTS_OVERPASS.slice(0, 2);
-      try {
-        const polygones = await courseSucces(
-          primaires.map(url => tenterEndpoint(url, requete, 30000))
-        );
-        console.info("[Surcharge OSM] chargée en " + (Date.now() - t0) + " ms " +
-                     "(" + polygones.length + " polygones)");
-        majEtat("osm", "ok", "Base bâtiments : à jour");
-        ecrireCacheLocal(cleCache, polygones);
-        appliquerPolygones(polygones, lat, lng);
-        return;
-      } catch (erreur) {
-        console.warn("[Surcharge OSM] miroirs primaires en échec après " +
-                     (Date.now() - t0) + " ms : " + erreur.message);
-      }
+      for (let i = 0; i < quadrants.length; i++) {
+        const la1 = quadrants[i][0], ln1 = quadrants[i][1];
+        const la2 = quadrants[i][2], ln2 = quadrants[i][3];
+        const cleQuadrant = la1 + "," + ln1 + "," + la2 + "," + ln2;
 
-      // 2) Miroirs restants, un par un
-      const secondaires = ENDPOINTS_OVERPASS.slice(2);
-      for (const url of secondaires) {
-        try {
-          const tReq = Date.now();
-          const polygones = await tenterEndpoint(url, requete, 20000);
-          console.info("[Surcharge OSM] chargée en " + (Date.now() - tReq) + " ms via " +
-                       new URL(url).host + " (" + polygones.length + " polygones)");
-          majEtat("osm", "ok", "Base bâtiments : à jour (" + new URL(url).host + ")");
-          ecrireCacheLocal(cleCache, polygones);
-          appliquerPolygones(polygones, lat, lng);
-          return;
-        } catch (erreur) {
-          console.warn("[Surcharge OSM] échec via " + new URL(url).host + " : " + erreur.message);
+        // Quadrant déjà obtenu plus tôt dans la session : on le reprend
+        if (resumeQuadrants.has(cleQuadrant)) {
+          for (const polygone of resumeQuadrants.get(cleQuadrant)) {
+            const cle = cleGeometrie(polygone);
+            if (!vus.has(cle)) { vus.add(cle); cumul.push(polygone); }
+          }
+          continue;
         }
-      }
 
-      // 3) Tout a échoué : secours avec un cache même périmé, sinon pause
-      dernierEchecComplet = Date.now();
-      if (depuisCache) {
-        console.warn("[Surcharge OSM] tous les serveurs Overpass sont indisponibles : " +
-                     "utilisation du cache local ancien (âge " +
-                     Math.round(depuisCache.ageMs / 60000) + " min)");
-        majEtat("osm", "attente", "Base bâtiments : cache ancien (indisponible)");
-        appliquerPolygones(depuisCache.polygones, lat, lng);
-        return;
+        const requete = "[out:json][timeout:150];(" +
+          'way["building"](' + la1 + "," + ln1 + "," + la2 + "," + ln2 + ");" +
+          'way["natural"="water"](' + la1 + "," + ln1 + "," + la2 + "," + ln2 + ");" +
+          'way["waterway"="riverbank"](' + la1 + "," + ln1 + "," + la2 + "," + ln2 + ");" +
+          ");out geom;";
+
+        let polygonesQuadrant = null;
+        for (const url of ENDPOINTS_OVERPASS) {
+          majEtat("osm", "attente", "Base bâtiments : chargement (quadrant " +
+                  (i + 1) + "/4 via " + new URL(url).host + ")…");
+          try {
+            polygonesQuadrant = await tenterEndpoint(url, requete, DELAI_MAX_QUADRANT_MS, true);
+            break;
+          } catch (erreur) {
+            console.warn("[Base bâtiments] quadrant " + (i + 1) + " échec via " +
+                         new URL(url).host + " : " + erreur.message);
+          }
+        }
+        if (!polygonesQuadrant) {
+          throw new Error("quadrant " + (i + 1) + "/4 indisponible sur tous les miroirs");
+        }
+
+        resumeQuadrants.set(cleQuadrant, polygonesQuadrant);
+        for (const polygone of polygonesQuadrant) {
+          const cle = cleGeometrie(polygone);
+          if (!vus.has(cle)) { vus.add(cle); cumul.push(polygone); }
+        }
+
+        // Application au fil de l'eau (maillage centré sur la position actuelle)
+        const pos = dernierePosition
+          ? dernierePosition.coords : { latitude: lat, longitude: lng };
+        appliquerPolygones(cumul, pos.latitude, pos.longitude, {
+          centreLat: lat, centreLng: lng, rayonMetres: RAYON_ZONE_METRES
+        });
+        console.info("[Base bâtiments] quadrant " + (i + 1) + "/4 reçu à " +
+                     Math.round((Date.now() - t0) / 1000) + " s (" +
+                     cumul.length + " objets au total)");
       }
-      console.warn("[Surcharge OSM] tous les serveurs Overpass sont indisponibles : " +
-                   "nouvelle tentative dans 1 minute. Points aléatoires « simples » en attendant.");
-      majEtat("osm", "echec", "Base bâtiments : indisponible");
-      geometrieDisponible = false;
-      polygonesBbox = [];
-      indexObstacles = null;
-      maillage = null;
+      return cumul;
+    }
+
+    /**
+     * Le maillage seul est recalculé autour de la nouvelle position, sans
+     * recharger ni indexer les données (les déplacements dans la zone).
+     */
+    function recentrerGeometrie(lat, lng) {
+      centreGeometrie = { lat: lat, lng: lng };
+      const t0 = Date.now();
+      construireMaillage(lat, lng);
+      console.info("[Base bâtiments] maillage recentré en " + (Date.now() - t0) + " ms");
+      if (pointsRouges.length && dernierePosition) {
+        revaliderPoints(dernierePosition.coords.latitude, dernierePosition.coords.longitude);
+      }
     }
 
     /**
      * Enregistre les polygones avec leur boîte englobante, puis reconstruit
      * le maillage (chronométré, visible dans la console).
+     * `zone` : zone couverte par ces polygones {centreLat, centreLng, rayonMetres}
+     * (mémorisée pour éviter tout re-téléchargement tant qu'on reste dedans).
      */
-    function appliquerPolygones(polygones, lat, lng) {
+    function appliquerPolygones(polygones, lat, lng, zone) {
       polygonesObstacles = polygones;
       polygonesBbox = polygones.map(polygone => {
         let minLat = Infinity, maxLat = -Infinity, minLng = Infinity, maxLng = -Infinity;
@@ -547,13 +688,14 @@
       });
       centreGeometrie = { lat: lat, lng: lng };
       geometrieDisponible = true;
+      zoneActive = zone || null;
 
       // Index spatial : sans lui, chaque test d'obstacle balaierait les 50 000+ polygones.
       construireIndexObstacles();
 
       const t0 = Date.now();
       construireMaillage(lat, lng);
-      console.info("[Surcharge OSM] maillage recalculé en " + (Date.now() - t0) + " ms");
+      console.info("[Base bâtiments] maillage recalculé en " + (Date.now() - t0) + " ms");
 
       // La base vient d'arriver (ou a changé) : les points mal placés sont
       // automatiquement repositionnés hors bâtiments/plans d'eau.
@@ -910,6 +1052,9 @@
           dashArray: "4 4"
         }).addTo(map);
       }
+
+      // Déplacement dans la zone chargée : recentrage du maillage, sans rechargement
+      suivreDeplacement(lat, lng);
 
       // Les 3 points avancent vers ma position à 5 km/h, en contournant les obstacles
       for (const point of pointsRouges) {
