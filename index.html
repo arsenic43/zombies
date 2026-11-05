@@ -298,15 +298,23 @@
 
     // --- Cache disque des zones (IndexedDB : pas de limite de quota) ---
     const NOM_BDD = "zombies-cartes";
-    const NOM_MAGASIN = "zones";
+    const NOM_MAGASIN = "zones";       // zones complètes consolidées
+    const NOM_MAGASIN_Q = "quadrants"; // morceaux de 5 km (reprise après échec)
+    const DUREE_VIE_QUADRANT_MS = 24 * 3600 * 1000;
     let promesseBDD = null;
 
     function ouvrirBaseZone() {
       if (promesseBDD) return promesseBDD;
       promesseBDD = new Promise((resoudre, rejeter) => {
-        const demande = indexedDB.open(NOM_BDD, 1);
+        const demande = indexedDB.open(NOM_BDD, 2);
         demande.onupgradeneeded = () => {
-          demande.result.createObjectStore(NOM_MAGASIN, { keyPath: "cle" });
+          const bdd = demande.result;
+          if (!bdd.objectStoreNames.contains(NOM_MAGASIN)) {
+            bdd.createObjectStore(NOM_MAGASIN, { keyPath: "cle" });
+          }
+          if (!bdd.objectStoreNames.contains(NOM_MAGASIN_Q)) {
+            bdd.createObjectStore(NOM_MAGASIN_Q, { keyPath: "cle" });
+          }
         };
         demande.onsuccess = () => resoudre(demande.result);
         demande.onerror = () => rejeter(demande.error || new Error("Ouverture impossible"));
@@ -314,11 +322,11 @@
       return promesseBDD;
     }
 
-    async function avecMagasin(mode, executer) {
+    async function avecMagasin(mode, executer, magasin) {
       const bdd = await ouvrirBaseZone();
       return new Promise((resoudre, rejeter) => {
-        const tx = bdd.transaction(NOM_MAGASIN, mode);
-        const requete = executer(tx.objectStore(NOM_MAGASIN));
+        const tx = bdd.transaction(magasin || NOM_MAGASIN, mode);
+        const requete = executer(tx.objectStore(magasin || NOM_MAGASIN));
         requete.onsuccess = () => resoudre(requete.result);
         requete.onerror = () => rejeter(requete.error || new Error("Accès refusé"));
       });
@@ -345,6 +353,36 @@
       } catch (erreur) {
         console.warn("[Base bâtiments] cache disque non persistant :", erreur.message);
       }
+    }
+
+    /** Mémorise un quadrant obtenu (survit aux rechargements, purge à 24 h). */
+    async function enregistrerQuadrantCache(cleQuadrant, polygones) {
+      if (!polygones.length) return;
+      try {
+        await avecMagasin("readwrite",
+          magasin => magasin.put({ cle: "q:" + cleQuadrant, quand: Date.now(), donnees: JSON.stringify(polygones) }),
+          NOM_MAGASIN_Q);
+        const tous = await avecMagasin("readonly", magasin => magasin.getAll(), NOM_MAGASIN_Q);
+        for (const vieux of tous.filter(e => Date.now() - e.quand > DUREE_VIE_QUADRANT_MS)) {
+          await avecMagasin("readwrite", magasin => magasin.delete(vieux.cle), NOM_MAGASIN_Q);
+        }
+        console.info("[Base bâtiments] quadrant mémorisé (" + polygones.length + " objets)");
+      } catch (erreur) { /* cache best effort : silencieux */ }
+    }
+
+    /** Restaure, s'ils sont déjà obtenus (< 24 h), les quadrants demandés. */
+    async function lireQuadrantsCache(clesQuadrants) {
+      const obtenus = new Map();
+      try {
+        for (const cleQuadrant of clesQuadrants) {
+          const entree = await avecMagasin("readonly",
+            magasin => magasin.get("q:" + cleQuadrant), NOM_MAGASIN_Q);
+          if (entree && Date.now() - entree.quand < DUREE_VIE_QUADRANT_MS) {
+            obtenus.set(cleQuadrant, JSON.parse(entree.donnees));
+          }
+        }
+      } catch (erreur) { /* cache best effort : silencieux */ }
+      return obtenus;
     }
 
     /** Recherche en cache une zone couvrant la position (quel que soit son âge). */
@@ -506,6 +544,12 @@
             indexObstacles = null;
             maillage = null;
             zoneActive = null;
+            // Relance automatique après la pause : les quadrants déjà obtenus
+            // sont conservés, la reprise ne redemande que ce qui manque.
+            setTimeout(() => {
+              const pos = dernierePosition ? dernierePosition.coords : null;
+              if (pos) majSurcharge(pos.latitude, pos.longitude);
+            }, PAUSE_APRES_ECHECS_MS + 2000);
           }
         }
       })();
@@ -599,6 +643,16 @@
       const vus = new Set();
       const t0 = Date.now();
 
+      // Reprise des quadrants déjà obtenus, y compris ceux d'une session
+      // précédente (les données par morceaux survivent aux rechargements)
+      const clesQuadrants = quadrants.map(q => q[0] + "," + q[1] + "," + q[2] + "," + q[3]);
+      const obtenusCache = await lireQuadrantsCache(clesQuadrants);
+      for (const [cle, polygones] of obtenusCache) resumeQuadrants.set(cle, polygones);
+      if (obtenusCache.size) {
+        console.info("[Base bâtiments] " + obtenusCache.size + "/4 quadrants en cache, " +
+                     "reprise sans re-téléchargement");
+      }
+
       for (let i = 0; i < quadrants.length; i++) {
         const la1 = quadrants[i][0], ln1 = quadrants[i][1];
         const la2 = quadrants[i][2], ln2 = quadrants[i][3];
@@ -636,6 +690,7 @@
         }
 
         resumeQuadrants.set(cleQuadrant, polygonesQuadrant);
+        enregistrerQuadrantCache(cleQuadrant, polygonesQuadrant); // non bloquant
         for (const polygone of polygonesQuadrant) {
           const cle = cleGeometrie(polygone);
           if (!vus.has(cle)) { vus.add(cle); cumul.push(polygone); }
