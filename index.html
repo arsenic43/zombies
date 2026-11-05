@@ -104,7 +104,7 @@
     "use strict";
 
     const ZOOM_MAX = 19;             // Zoom maximum pour les tuiles OpenStreetMap
-    const RAYON_METRES = 50;         // Rayon des points aléatoires
+    const RAYON_METRES = 150;        // Rayon d'apparition des points aléatoires
     const NB_POINTS = 3;             // Nombre de points à afficher
     const INTERVALLE_MS = 1000;      // Actualisation toutes les secondes
 
@@ -114,7 +114,7 @@
 
     // --- Maillage pour le contournement des obstacles ---
     const COTE_CELLULE = 2;          // Taille d'une cellule du maillage : 2 m
-    const DEMI_MAILLAGE = 40;        // 81 x 81 cellules = 160 m x 160 m autour de moi
+    const DEMI_MAILLAGE = 75;        // 151 x 151 cellules = 302 m x 302 m : couvre le rayon d'apparition de 150 m
     const NB_COTES = 2 * DEMI_MAILLAGE + 1;
     const RACINE2 = Math.SQRT2;
     const DEPLACEMENTS = [           // [dLigne, dColonne, coût] — 8 directions
@@ -151,7 +151,6 @@
     // --- État de l'application ---
     let carteInitialisee = false;    // Premier centrage sur la position GPS déjà fait ?
     let marqueurPosition = null;     // Rond bleu = ma position
-    let cercleRayon = null;          // Cercle rouge en pointillés = rayon de 50 m
     let pointsRouges = [];           // Les 3 points rouges {marker, lat, lng}
     let dernierePosition = null;     // Dernière position reçue du navigateur
 
@@ -1188,19 +1187,6 @@
           weight: 2,
           fillColor: "#2a81cb",
           fillOpacity: 1
-        }).addTo(map);
-      }
-
-      // Cercle du rayon de 50 m (visualisation)
-      if (cercleRayon) {
-        cercleRayon.setLatLng([lat, lng]);
-      } else {
-        cercleRayon = L.circle([lat, lng], {
-          radius: RAYON_METRES,
-          color: "#cc0000",
-          weight: 1,
-          fill: false,
-          dashArray: "4 4"
         }).addTo(map);
       }
 
