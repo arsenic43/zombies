@@ -76,6 +76,14 @@
     .point.echec {
       background: #d32f2f;
     }
+    /* Ligne du curseur de vitesse : le panneau est en pointer-events none,
+       le curseur doit rester manipulable */
+    .ligne.vitesse input[type="range"] {
+      pointer-events: auto;
+      width: 100%;
+      margin: 3px 0 0;
+      accent-color: #d32f2f;
+    }
   </style>
 </head>
 <body>
@@ -85,6 +93,9 @@
     <div class="ligne"><span class="point attente"></span><span id="etat-gps">GPS : en attente…</span></div>
     <div class="ligne"><span class="point attente"></span><span id="etat-osm">Base bâtiments : en attente…</span></div>
     <div class="ligne"><span class="point attente"></span><span id="etat-points">Points : en attente GPS…</span></div>
+    <div class="ligne vitesse"><span class="point ok"></span><span id="etat-vitesse">Vitesse : moyen (course à pied) — 12 km/h</span>
+      <input type="range" id="choix-vitesse" min="1" max="3" step="1" value="2" aria-label="Vitesse des points rouges">
+    </div>
     <div class="ligne"><span class="point attente"></span><span id="etat-version">Version : vérification…</span></div>
   </div>
   <div id="message">En attente de votre position…<br>Veuillez autoriser la géolocalisation.</div>
@@ -96,7 +107,10 @@
     const RAYON_METRES = 50;         // Rayon des points aléatoires
     const NB_POINTS = 3;             // Nombre de points à afficher
     const INTERVALLE_MS = 1000;      // Actualisation toutes les secondes
-    const VITESSE_MS = 5 / 3.6;      // Vitesse des points : 5 km/h ≈ 1,39 m/s
+
+    // Vitesses prédéfinies des points rouges (curseur : 1 = lente, 2 = moyen, 3 = rapide)
+    const VITESSES_KMH = [5, 12, 20];     // marche, course à pied, course rapide
+    let vitesseMS = VITESSES_KMH[1] / 3.6; // Réglage initial : moyen
 
     // --- Maillage pour le contournement des obstacles ---
     const COTE_CELLULE = 2;          // Taille d'une cellule du maillage : 2 m
@@ -1002,7 +1016,7 @@
      * est replacé aléatoirement (hors obstacles).
      */
     async function avancerPoint(point, latCible, lngCible) {
-      const avance = VITESSE_MS * (INTERVALLE_MS / 1000); // Distance parcourue en 1 s
+      const avance = vitesseMS * (INTERVALLE_MS / 1000); // Distance parcourue en 1 s
 
       // Recalcul du chemin à chaque seconde (la cible bouge)
       let chemin = null;
@@ -1198,7 +1212,7 @@
         majSurcharge(lat, lng);
       }
 
-      // Les 3 points avancent vers ma position à 5 km/h, en contournant les obstacles
+      // Les 3 points avancent vers ma position à leur vitesse réglée, en contournant les obstacles
       for (const point of pointsRouges) {
         await avancerPoint(point, lat, lng);
       }
@@ -1252,6 +1266,22 @@
       } catch (erreur) {
         majEtat("version", "echec", "Version : vérification impossible");
       }
+    }
+
+    // --- Curseur de vitesse des points rouges (3 réglages prédéfinis) ---
+    function majLibelleVitesse(niveau) {
+      const noms = ["lente (marche)", "moyen (course à pied)", "rapide (course rapide)"];
+      majEtat("vitesse", "ok", "Vitesse : " + noms[niveau - 1] +
+              " — " + VITESSES_KMH[niveau - 1] + " km/h");
+    }
+    const choixVitesse = document.getElementById("choix-vitesse");
+    if (choixVitesse) {
+      majLibelleVitesse(parseInt(choixVitesse.value, 10));
+      choixVitesse.addEventListener("input", () => {
+        const niveau = parseInt(choixVitesse.value, 10);
+        vitesseMS = VITESSES_KMH[niveau - 1] / 3.6;
+        majLibelleVitesse(niveau);
+      });
     }
 
     // --- Suivi GPS : on garde la dernière position, l'affichage est actualisé chaque seconde ---
