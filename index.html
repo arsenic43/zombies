@@ -1064,6 +1064,84 @@
       point.marker.setLatLng([la, ln]);
     }
 
+    // --- Annonces vocales selon la proximité des points rouges ---
+    const SEUIL_PROCHE_M = 15;           // « Attention, zombi proche » sous cette distance
+    const SEUIL_MORDU_M = 1;             // « Vous avez été mordu » sous cette distance
+    const RAPPEL_ANNONCE_MS = 10000;     // Re-rappel tant que la menace persiste
+    const HYSTERESIS_DIFF_M = 2;         // Sortie de bande avec 2 m de marge (anti-oscillation)
+    let derniereAnnonceMS = 0;           // Anti-cacophonie entre deux voix
+    let bandeAnnonce = null;             // null | "proche" | "mordu"
+    let dernierRappelProcheMS = 0;       // Dernier rappel « zombi proche »
+    let dernierRappelMorduMS = 0;        // Dernier rappel « vous avez été mordu »
+
+    /**
+     * Déblocage de la synthèse vocale au premier contact utilisateur
+     * (les navigateurs n'autorisent pas le son avant une interaction).
+     */
+    function deverrouillerVoix() {
+      try {
+        if ("speechSynthesis" in window) {
+          speechSynthesis.speak(new SpeechSynthesisUtterance(" "));
+        }
+      } catch (erreur) { /* silencieux */ }
+    }
+    window.addEventListener("touchstart", deverrouillerVoix, { once: true });
+    window.addEventListener("mousedown", deverrouillerVoix, { once: true });
+
+    /**
+     * Fait parler l'appareil (voix française ; sans garantie si le mobile
+     * n'en possède aucune) ; une annonce « urgente » coupe la voix en cours.
+     */
+    function parler(texte, urgence) {
+      if (!("speechSynthesis" in window)) return;
+      const maintenant = Date.now();
+      if (!urgence && maintenant - derniereAnnonceMS < 5000) return; // anti-cacophonie
+      derniereAnnonceMS = maintenant;
+      try {
+        if (urgence) speechSynthesis.cancel();
+        const voix = new SpeechSynthesisUtterance(texte);
+        voix.lang = "fr-FR";
+        voix.volume = 1;
+        speechSynthesis.speak(voix);
+      } catch (erreur) { /* son bloqué : silencieux */ }
+    }
+
+    /**
+     * Annonce selon la distance du point rouge le plus proche :
+     * - < 1 m : « Vous avez été mordu » (urgence, coupe la voix en cours) ;
+     * - < 15 m : « Attention, zombi proche ».
+     * Rappel toutes les 10 s tant que l'état persiste ; la bande ne
+     * « se libère » qu'à plus de 17 m (marge, pour éviter le yoyo quand
+     * un point oscille autour du seuil).
+     */
+    function verifierAnnonces(latCible, lngCible) {
+      if (!pointsRouges.length) return;
+      let plusProche = Infinity;
+      for (const point of pointsRouges) {
+        const d = distanceMetres(point.lat, point.lng, latCible, lngCible);
+        if (d < plusProche) plusProche = d;
+      }
+      const maintenant = Date.now();
+      if (plusProche < SEUIL_MORDU_M) {
+        if (bandeAnnonce !== "mordu" ||
+            maintenant - dernierRappelMorduMS >= RAPPEL_ANNONCE_MS) {
+          bandeAnnonce = "mordu";
+          dernierRappelMorduMS = maintenant;
+          parler("Vous avez été mordu !", true);
+        }
+      } else if (plusProche < SEUIL_PROCHE_M) {
+        if (bandeAnnonce !== "proche" ||
+            maintenant - dernierRappelProcheMS >= RAPPEL_ANNONCE_MS) {
+          bandeAnnonce = "proche";
+          dernierRappelProcheMS = maintenant;
+          dernierRappelMorduMS = maintenant;
+          parler("Attention, zombi proche", false);
+        }
+      } else if (plusProche > SEUIL_PROCHE_M + HYSTERESIS_DIFF_M) {
+        bandeAnnonce = null;
+      }
+    }
+
     /**
      * Mise à jour de l'affichage, appelée toutes les secondes.
      */
@@ -1124,6 +1202,9 @@
       for (const point of pointsRouges) {
         await avancerPoint(point, lat, lng);
       }
+
+      // Alerte vocale selon la distance du point le plus proche
+      verifierAnnonces(lat, lng);
     }
 
     /**
