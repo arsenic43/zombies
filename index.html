@@ -126,7 +126,11 @@
     const RAYON_METRES = 150;        // Rayon d'apparition maximal des points
     const RAYON_APPARITION_MIN_M = 50; // Distance minimale d'apparition des points
     const NB_POINTS_MIN = 1;         // Nombre de points aléatoire, entre…
-    const NB_POINTS_MAX = 5;         // …1 et 5 (tiré à chaque vague d'apparition)
+    const NB_POINTS_MAX = 5;         // …1 et 5 (tiré à la mise en route)
+    const NB_VAGUE_MIN = 1;          // Vague horaire : tirage entre…
+    const NB_VAGUE_MAX = 10;         // …1 et 10 points ajoutés chaque minute
+    const INTERVALLE_VAGUE_MS = 60000; // Période des vagues : 1 minute
+    let vagueProgrammee = false;     // L'intervalle des vagues n'est lancé qu'une fois
     const INTERVALLE_MS = 1000;      // Actualisation toutes les secondes
 
     // Vitesses prédéfinies des points rouges (curseur : 1 = lente, 2 = moyen, 3 = rapide)
@@ -994,15 +998,11 @@
     }
 
     /**
-     * Crée immédiatement les points rouges (mode aléatoire simple, sans
-     * attendre la base OSM : l'affichage reste instantané), puis charge la
-     * surcharge OSM en arrière-plan et revalide ensuite les positions.
-     * Le nombre de points est tiré au hasard à chaque vague : entre 1 et 5.
+     * Ajoute `nb` nouveaux points rouges à la carte, tirés hors bâtiments et
+     * hors eau dans l'anneau de 50 à 150 m. Renseigne le compteur du panneau.
      */
-    async function creerPoints(lat, lng) {
-      const nbPoints = NB_POINTS_MIN +
-        Math.floor(Math.random() * (NB_POINTS_MAX - NB_POINTS_MIN + 1));
-      for (let i = 0; i < nbPoints; i++) {
+    function ajouterPoints(lat, lng, nb) {
+      for (let i = 0; i < nb; i++) {
         const p = pointLibreAleatoire(lat, lng);
         const marker = L.circleMarker([p.lat, p.lng], {
           radius: 8,
@@ -1011,14 +1011,40 @@
           fillColor: "#ff0000",
           fillOpacity: 1
         }).addTo(map);
-        marker.bindTooltip("Point " + (i + 1));
+        marker.bindTooltip("Point " + (pointsRouges.length + 1));
         pointsRouges.push({ marker: marker, lat: p.lat, lng: p.lng });
       }
-      majEtat("points", "ok", "Points : " + nbPoints + " affichés");
+      majEtat("points", "ok", "Points : " + pointsRouges.length + " affichés");
+    }
+
+    /**
+     * Crée immédiatement les points rouges (mode aléatoire simple, sans
+     * attendre la base OSM : l'affichage reste instantané), puis charge la
+     * surcharge OSM en arrière-plan et revalide ensuite les positions.
+     * - À la mise en route : tirage initial entre 1 et 5 points.
+     * - Ensuite, toutes les minutes : un nouveau tirage entre 1 et 10
+     *   points vient s'ajouter à la carte (règles d'apparition identiques).
+     */
+    async function creerPoints(lat, lng) {
+      const nbPoints = NB_POINTS_MIN +
+        Math.floor(Math.random() * (NB_POINTS_MAX - NB_POINTS_MIN + 1));
+      ajouterPoints(lat, lng, nbPoints);
       // La base OSM arrive plus tard : dès qu'elle est disponible, les points
       // éventuellement mal placés sont repositionnés automatiquement
       // (hook dans appliquerPolygones).
       majSurcharge(lat, lng);
+
+      // Vague supplémentaire chaque minute (autour de la position GPS courante)
+      if (!vagueProgrammee) {
+        vagueProgrammee = true;
+        setInterval(() => {
+          if (!dernierePosition) return;
+          const nbVague = NB_VAGUE_MIN +
+            Math.floor(Math.random() * (NB_VAGUE_MAX - NB_VAGUE_MIN + 1));
+          ajouterPoints(dernierePosition.coords.latitude,
+                        dernierePosition.coords.longitude, nbVague);
+        }, INTERVALLE_VAGUE_MS);
+      }
     }
 
     /**
