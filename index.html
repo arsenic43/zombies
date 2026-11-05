@@ -1062,8 +1062,14 @@
         }
       }
 
-      // Le point a atteint ma position : nouvelle position aléatoire, hors obstacles
+      // Le point a atteint ma position : il vous a attrapé — annonce de
+      // morsure (le contrôle « < 1 m » instantané ne peut pas voir ce moment,
+      // car le point est aussitôt repositionné au loin), puis nouvelle
+      // position aléatoire, hors obstacles.
       if (distanceMetres(la, ln, latCible, lngCible) <= avance) {
+        bandeAnnonce = "mordu";
+        dernierRappelMorduMS = Date.now();
+        parler("Vous avez été mordu !", true);
         la = latCible;
         ln = lngCible;
         await majSurcharge(latCible, lngCible);
@@ -1126,6 +1132,8 @@
      * Rappel toutes les 10 s tant que l'état persiste ; la bande ne
      * « se libère » qu'à plus de 17 m (marge, pour éviter le yoyo quand
      * un point oscille autour du seuil).
+     * NB : un point qui vous rattrape déclenche aussi la morsure
+     * directement (avancerPoint), car il est aussitôt repositionné au loin.
      */
     function verifierAnnonces(latCible, lngCible) {
       if (!pointsRouges.length) return;
