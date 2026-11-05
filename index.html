@@ -83,7 +83,7 @@
   <div id="etat">
     <div class="ligne"><span class="point attente"></span><span id="etat-carte">Carte : chargement…</span></div>
     <div class="ligne"><span class="point attente"></span><span id="etat-gps">GPS : en attente…</span></div>
-    <div class="ligne"><span class="point attente"></span><span id="etat-osm">Base OSM : en attente…</span></div>
+    <div class="ligne"><span class="point attente"></span><span id="etat-osm">Base bâtiments : en attente…</span></div>
     <div class="ligne"><span class="point attente"></span><span id="etat-points">Points : en attente GPS…</span></div>
     <div class="ligne"><span class="point attente"></span><span id="etat-version">Version : vérification…</span></div>
   </div>
@@ -144,6 +144,7 @@
     // Cache des polygones "obstacles" (bâtiments + eau) autour de ma position
     let polygonesObstacles = [];     // [{ {lat, lon}, ... }, ...]
     let polygonesBbox = [];          // Mêmes polygones + boîtes englobantes (filtre rapide)
+    let indexObstacles = null;       // Index spatial : clé de grille -> polygones locaux
     let centreGeometrie = null;      // Position pour laquelle le cache est valable
     let geometrieDisponible = false; // Surcharge chargée avec succès ?
     let maillage = null;             // Grille d'occupation {lat0, lng0, pasLat, pasLng, obstruees}
@@ -202,12 +203,54 @@
     }
 
     /**
-     * Le point est-il sur un bâtiment ou un plan d'eau (d'après le cache OSM) ?
-     * Une boîte englobante élimine d'abord la quasi-totalité des polygones,
-     * le test exact ne reste qu'en dernier recours.
+     * Le point est-il sur un bâtiment ou un plan d'eau (d'après la base chargée) ?
+     * Un index spatial (grille de 100 m) limite le test aux polygones voisins.
      */
+    const TAILLE_BLOC_INDEX = 100; // mètres
+
+    function construireIndexObstacles() {
+      if (!polygonesBbox.length) {
+        indexObstacles = null;
+        return;
+      }
+      let minLat = Infinity, maxLat = -Infinity, minLng = Infinity, maxLng = -Infinity;
+      for (const b of polygonesBbox) {
+        if (b.minLat < minLat) minLat = b.minLat;
+        if (b.maxLat > maxLat) maxLat = b.maxLat;
+        if (b.minLng < minLng) minLng = b.minLng;
+        if (b.maxLng > maxLng) maxLng = b.maxLng;
+      }
+      const pasLat = TAILLE_BLOC_INDEX / 111320;
+      const pasLng = TAILLE_BLOC_INDEX / (111320 * Math.cos((minLat + maxLat) / 2 * Math.PI / 180));
+      const carte = new Map();
+      for (const b of polygonesBbox) {
+        const iMin = Math.floor(b.minLat / pasLat), iMax = Math.floor(b.maxLat / pasLat);
+        const jMin = Math.floor(b.minLng / pasLng), jMax = Math.floor(b.maxLng / pasLng);
+        for (let i = iMin; i <= iMax; i++) {
+          for (let j = jMin; j <= jMax; j++) {
+            const cle = i + ":" + j;
+            let liste = carte.get(cle);
+            if (!liste) { liste = []; carte.set(cle, liste); }
+            liste.push(b);
+          }
+        }
+      }
+      indexObstacles = { carte: carte, pasLat: pasLat, pasLng: pasLng };
+    }
+
     function estSurObstacle(lat, lng) {
       if (!geometrieDisponible) return false; // Pas de données : on ne peut pas tester
+      if (indexObstacles) {
+        const liste = indexObstacles.carte.get(
+          Math.floor(lat / indexObstacles.pasLat) + ":" + Math.floor(lng / indexObstacles.pasLng));
+        if (!liste) return false;
+        for (const b of liste) {
+          if (lat < b.minLat || lat > b.maxLat || lng < b.minLng || lng > b.maxLng) continue;
+          if (pointDansPolygone(lat, lng, b.polygone)) return true;
+        }
+        return false;
+      }
+      // Repli (index non construit) : parcours des boîtes englobantes
       for (const b of polygonesBbox) {
         if (lat < b.minLat || lat > b.maxLat || lng < b.minLng || lng > b.maxLng) continue;
         if (pointDansPolygone(lat, lng, b.polygone)) return true;
@@ -258,6 +301,52 @@
       } catch (erreur) { /* quota dépassé ou mode privé : on ignore */ }
     }
 
+    // === Données figées intégrées (BD TOPO IGN, zone de Bois d'Arcy) ===
+    // PARTS_BATIMENTS : nombre de fichiers batiments.partN.json (4 = Bois d'Arcy 5 km)
+    const PARTS_BATIMENTS = 4;
+    let donneesFigees = null;
+    let donneesFigeesPromesse = null;
+
+    async function chargerDonneesFigees() {
+      if (PARTS_BATIMENTS === 0) return;
+      const polygonesCumules = [];
+      try {
+        for (let i = 1; i <= PARTS_BATIMENTS; i++) {
+          const reponse = await fetch("batiments.part" + i + ".json", { cache: "no-store" });
+          if (!reponse.ok) return; // fichier manquant : repli Overpass
+          const morceau = await reponse.json();
+          if (Array.isArray(morceau)) polygonesCumules.push(...morceau);
+        }
+      } catch (erreur) {
+        console.warn("[Données figées] indisposables :", erreur.message);
+        return;
+      }
+      if (!polygonesCumules.length) return;
+      donneesFigees = {
+        centreLat: 48.8020,   // Bois d'Arcy (centre)
+        centreLng: 2.0410,
+        rayonMetres: 5000,
+        polygones: polygonesCumules
+      };
+      console.info("[Données figées] " + donneesFigees.polygones.length + " polygones (IGN BD TOPO)");
+    }
+
+    /**
+     * La position donnée est-elle couverte par les données figées ?
+     */
+    async function dansZoneFige(lat, lng) {
+      if (!donneesFigees) {
+        if (!donneesFigeesPromesse) {
+          donneesFigeesPromesse = chargerDonneesFigees();
+        }
+        await donneesFigeesPromesse;
+      }
+      if (!donneesFigees) return false;
+      const rayon = donneesFigees.rayonMetres - 100; // marge aux bords de la zone
+      if (rayon <= 0) return false;
+      return distanceMetres(donneesFigees.centreLat, donneesFigees.centreLng, lat, lng) < rayon;
+    }
+
     async function majSurcharge(lat, lng) {
       // Cache mémoire encore valable ?
       if (centreGeometrie &&
@@ -282,8 +371,15 @@
       if (depuisCache && depuisCache.ageMs < DUREE_VIE_CACHE_MS) {
         console.info("[Surcharge OSM] restaurée depuis le cache local (" +
                      Math.round(depuisCache.ageMs / 60000) + " min)");
-        majEtat("osm", "ok", "Base OSM : cache local");
+        majEtat("osm", "ok", "Base bâtiments : cache local");
         appliquerPolygones(depuisCache.polygones, lat, lng);
+        return;
+      }
+
+      // Données figées intégrées à l'application (IGN BD TOPO, Bois d'Arcy 5 km)
+      if (await dansZoneFige(lat, lng)) {
+        majEtat("osm", "ok", "Base bâtiments : intégrée (IGN)");
+        appliquerPolygones(donneesFigees.polygones, lat, lng);
         return;
       }
 
@@ -371,7 +467,7 @@
      * primaires, puis séquentiellement sur les miroirs restants.
      */
     async function chargerSurcharge(lat, lng, cleCache) {
-      majEtat("osm", "attente", "Base OSM : chargement…");
+      majEtat("osm", "attente", "Base bâtiments : chargement…");
       const requete = "[out:json][timeout:25];(" +
         'way["building"](around:60,' + lat + "," + lng + ");" +
         'way["natural"="water"](around:60,' + lat + "," + lng + ");" +
@@ -388,7 +484,7 @@
         );
         console.info("[Surcharge OSM] chargée en " + (Date.now() - t0) + " ms " +
                      "(" + polygones.length + " polygones)");
-        majEtat("osm", "ok", "Base OSM : à jour");
+        majEtat("osm", "ok", "Base bâtiments : à jour");
         ecrireCacheLocal(cleCache, polygones);
         appliquerPolygones(polygones, lat, lng);
         return;
@@ -405,7 +501,7 @@
           const polygones = await tenterEndpoint(url, requete, 20000);
           console.info("[Surcharge OSM] chargée en " + (Date.now() - tReq) + " ms via " +
                        new URL(url).host + " (" + polygones.length + " polygones)");
-          majEtat("osm", "ok", "Base OSM : à jour (" + new URL(url).host + ")");
+          majEtat("osm", "ok", "Base bâtiments : à jour (" + new URL(url).host + ")");
           ecrireCacheLocal(cleCache, polygones);
           appliquerPolygones(polygones, lat, lng);
           return;
@@ -420,15 +516,16 @@
         console.warn("[Surcharge OSM] tous les serveurs Overpass sont indisponibles : " +
                      "utilisation du cache local ancien (âge " +
                      Math.round(depuisCache.ageMs / 60000) + " min)");
-        majEtat("osm", "attente", "Base OSM : cache ancien (indisponible)");
+        majEtat("osm", "attente", "Base bâtiments : cache ancien (indisponible)");
         appliquerPolygones(depuisCache.polygones, lat, lng);
         return;
       }
       console.warn("[Surcharge OSM] tous les serveurs Overpass sont indisponibles : " +
                    "nouvelle tentative dans 1 minute. Points aléatoires « simples » en attendant.");
-      majEtat("osm", "echec", "Base OSM : indisponible");
+      majEtat("osm", "echec", "Base bâtiments : indisponible");
       geometrieDisponible = false;
       polygonesBbox = [];
+      indexObstacles = null;
       maillage = null;
     }
 
@@ -450,6 +547,9 @@
       });
       centreGeometrie = { lat: lat, lng: lng };
       geometrieDisponible = true;
+
+      // Index spatial : sans lui, chaque test d'obstacle balaierait les 50 000+ polygones.
+      construireIndexObstacles();
 
       const t0 = Date.now();
       construireMaillage(lat, lng);
