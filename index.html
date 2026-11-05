@@ -130,6 +130,7 @@
     const NB_VAGUE_MIN = 1;          // Vague horaire : tirage entre…
     const NB_VAGUE_MAX = 10;         // …1 et 10 points ajoutés chaque minute
     const INTERVALLE_VAGUE_MS = 60000; // Période des vagues : 1 minute
+    const NB_POINTS_TOTAL_MAX = 15;  // Plafond : jamais plus de 15 points en même temps
     let vagueProgrammee = false;     // L'intervalle des vagues n'est lancé qu'une fois
     const INTERVALLE_MS = 1000;      // Actualisation toutes les secondes
 
@@ -998,11 +999,14 @@
     }
 
     /**
-     * Ajoute `nb` nouveaux points rouges à la carte, tirés hors bâtiments et
-     * hors eau dans l'anneau de 50 à 150 m. Renseigne le compteur du panneau.
+     * Ajoute jusqu'à `nb` nouveaux points rouges à la carte, tirés hors
+     * bâtiments et hors eau dans l'anneau de 50 à 150 m. Le total est plafonné
+     * à NB_POINTS_TOTAL_MAX : une vague n'ajoute que les places restantes.
+     * Renseigne le compteur du panneau.
      */
     function ajouterPoints(lat, lng, nb) {
-      for (let i = 0; i < nb; i++) {
+      const aCreer = Math.min(nb, Math.max(0, NB_POINTS_TOTAL_MAX - pointsRouges.length));
+      for (let i = 0; i < aCreer; i++) {
         const p = pointLibreAleatoire(lat, lng);
         const marker = L.circleMarker([p.lat, p.lng], {
           radius: 8,
@@ -1014,7 +1018,8 @@
         marker.bindTooltip("Point " + (pointsRouges.length + 1));
         pointsRouges.push({ marker: marker, lat: p.lat, lng: p.lng });
       }
-      majEtat("points", "ok", "Points : " + pointsRouges.length + " affichés");
+      const plein = pointsRouges.length >= NB_POINTS_TOTAL_MAX ? " (maximum atteint)" : "";
+      majEtat("points", "ok", "Points : " + pointsRouges.length + " affichés" + plein);
     }
 
     /**
@@ -1023,7 +1028,8 @@
      * surcharge OSM en arrière-plan et revalide ensuite les positions.
      * - À la mise en route : tirage initial entre 1 et 5 points.
      * - Ensuite, toutes les minutes : un nouveau tirage entre 1 et 10
-     *   points vient s'ajouter à la carte (règles d'apparition identiques).
+     *   points vient s'ajouter à la carte (règles d'apparition identiques),
+     *   dans la limite totale de 15 points en même temps.
      */
     async function creerPoints(lat, lng) {
       const nbPoints = NB_POINTS_MIN +
