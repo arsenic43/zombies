@@ -1144,7 +1144,39 @@
 
       point.lat = la;
       point.lng = ln;
-      point.marker.setLatLng([la, ln]);
+      animerZombie(point, la, ln);
+    }
+
+    /**
+     * Positionne le marqueur du zombie en glissant en continu vers sa cible
+     * (interpolation linéaire sur la durée du tic, soit 1 s) : le mouvement
+     * paraît fluide au lieu d'un saut à chaque seconde. La position logique
+     * (point.lat/lng) reste, elle, fixée immédiatement — distances, halo,
+     * alertes vocales ne dépendent pas de l'animation. Une téléportation
+     * (saut supérieur à un pas normal) apparaît sans glissement.
+     */
+    function animerZombie(point, latC, lngC) {
+      if (point.anim) clearInterval(point.anim);
+      point.anim = null;
+      const depart = point.marker.getLatLng();
+      if (distanceMetres(depart.lat, depart.lng, latC, lngC) > TRACE_ZOMBIE_PAS_MAX_M) {
+        point.marker.setLatLng([latC, lngC]); // téléportation : apparition immédiate
+        return;
+      }
+      const t0 = performance.now();
+      point.anim = setInterval(() => {
+        const avancement = Math.min(1, (performance.now() - t0) / INTERVALLE_MS);
+        if (avancement >= 1) {
+          point.marker.setLatLng([latC, lngC]);
+          clearInterval(point.anim);
+          point.anim = null;
+          return;
+        }
+        point.marker.setLatLng([
+          depart.lat + (latC - depart.lat) * avancement,
+          depart.lng + (lngC - depart.lng) * avancement
+        ]);
+      }, 50);
     }
 
     // --- Annonces vocales selon la proximité des points rouges ---
