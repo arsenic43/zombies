@@ -1137,6 +1137,11 @@
         ln = p.lng;
       }
 
+      // Traînée du zombie : segment rouge depuis la position d'avant vers la
+      // position après déplacement. La téléportation (rattrapage → réapparition
+      // à 50-150 m) ne trace rien : le saut ne serait pas un vrai déplacement.
+      majTraceZombie(point, la, ln);
+
       point.lat = la;
       point.lng = ln;
       point.marker.setLatLng([la, ln]);
@@ -1221,6 +1226,44 @@
       segmentsTrace = restants;
       const vieMax = TRACE_DUREE_PLEIN_MS + TRACE_DUREE_FONDU_MS;
       pointsTrace = pointsTrace.filter(p => maintenant - p.tms < vieMax);
+    }
+
+    // --- Tracé des zombies (traînée derrière chaque point rouge) ---
+    const TRACE_ZOMBIE_VIE_MS = 15000; // Chaque segment vit 15 s, fondu linéaire 1 → 0
+    const TRACE_ZOMBIE_PAS_MAX_M = 30;  // Au-delà : téléportation, on ne trace pas
+
+    /**
+     * Traînée rouge derrière chaque zombie : un segment par seconde entre sa
+     * position d'avant et d'après déplacement, opacité décroissante linéaire
+     * jusqu'à disparition complète au bout de 15 s. Le segment tout récent est
+     * le plus dense : la queue s'estompe à mesure que le zombie s'éloigne.
+     * Les téléportations (rattrapage, revalidation) ne laissent pas de trace.
+     */
+    function majTraceZombie(point, la, ln) {
+      point.trais = point.trais || [];
+      const maintenant = Date.now();
+      const pas = distanceMetres(point.lat, point.lng, la, ln);
+      if (pas > 0 && pas <= TRACE_ZOMBIE_PAS_MAX_M) {
+        point.trais.push({
+          trajet: L.polyline([[point.lat, point.lng], [la, ln]], {
+            color: "#cc0000",
+            weight: 2,
+            opacity: 1
+          }).addTo(map),
+          tms: maintenant
+        });
+      }
+      const restants = [];
+      for (const seg of point.trais) {
+        const opacite = 1 - (maintenant - seg.tms) / TRACE_ZOMBIE_VIE_MS;
+        if (opacite <= 0) {
+          map.removeLayer(seg.trajet);
+          continue;
+        }
+        seg.trajet.setStyle({ opacity: opacite });
+        restants.push(seg);
+      }
+      point.trais = restants;
     }
 
     /**
