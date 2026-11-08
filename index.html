@@ -112,6 +112,7 @@
     <div class="ligne"><span class="point attente"></span><span id="etat-gps">GPS : en attente…</span></div>
     <div class="ligne"><span class="point attente"></span><span id="etat-osm">Base bâtiments : en attente…</span></div>
     <div class="ligne"><span class="point attente"></span><span id="etat-points">Points : en attente GPS…</span></div>
+    <div class="ligne"><span class="point attente"></span><span id="etat-distance">Distance : 0 m</span></div>
     <div class="ligne vitesse"><span class="point ok"></span><span id="etat-vitesse">Vitesse : moyen (course à pied) — 12 km/h</span>
       <input type="range" id="choix-vitesse" min="1" max="3" step="1" value="2" aria-label="Vitesse des points rouges">
     </div>
@@ -1216,17 +1217,33 @@
     const TRACE_PAS_MIN_M = 1;           // Aucun segment si on ne bouge pas
     let pointsTrace = [];                // {lat, lng, tms} des derniers passages
     let segmentsTrace = [];              // {trajet (L.polyline), tms} affichés
+    let distanceParcourue = 0;           // Podomètre : distance totale moyenne (m)
+
+    /**
+     * Formate la distance parcourue : mètres sous 1 km, kilomètres au-delà.
+     */
+    function texteDistance(metres) {
+      if (metres < 1000) return Math.round(metres) + " m";
+      return (metres / 1000).toFixed(2).replace(".", ",") + " km";
+    }
 
     /**
      * Ajoute, si je me suis déplacé (≥ 1 m), un segment de traînée depuis la
      * dernière position enregistrée ; recalcule l'opacité de chaque segment
      * (plein 30 s → fondu linéaire 30 s → suppression) et purge les vieux.
+     * Chaque nouveau segment nourrit aussi le podomètre.
      */
     function majTrace(lat, lng, maintenant) {
       const dernier = pointsTrace[pointsTrace.length - 1];
       if (!dernier ||
           distanceMetres(dernier.lat, dernier.lng, lat, lng) >= TRACE_PAS_MIN_M) {
         if (dernier) {
+          const pas = distanceMetres(dernier.lat, dernier.lng, lat, lng);
+          if (pas >= TRACE_PAS_MIN_M) {
+            distanceParcourue += pas;
+            majEtat("distance", "ok",
+                    "Distance : " + texteDistance(distanceParcourue));
+          }
           segmentsTrace.push({
             trajet: L.polyline([[dernier.lat, dernier.lng], [lat, lng]], {
               color: "#2a81cb",      // même bleu que le marqueur de position
