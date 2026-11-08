@@ -102,21 +102,64 @@
       margin: 3px 0 0;
       accent-color: #d32f2f;
     }
+    /* Encart relevés (bas-gauche) : podomètre + curseur de vitesse */
+    #releves {
+      position: absolute;
+      bottom: 8px;
+      left: 8px;
+      z-index: 1000;
+      background: rgba(255, 255, 255, 0.88);
+      border-radius: 6px;
+      padding: 6px 10px;
+      font-family: sans-serif;
+      font-size: 11px;
+      line-height: 18px;
+      color: #333;
+      pointer-events: none;
+      box-shadow: 0 1px 4px rgba(0, 0, 0, 0.15);
+      min-width: 170px;
+    }
+    /* Encart statut repliable : un bouton de pliage, et le corps se cache */
+    #plis-etat {
+      pointer-events: auto;
+      border: none;
+      background: none;
+      padding: 0;
+      font: inherit;
+      color: #333;
+      cursor: pointer;
+      width: 100%;
+      text-align: left;
+      display: flex;
+      align-items: center;
+      gap: 5px;
+    }
+    #etat.replie {
+      padding: 4px 10px;
+    }
+    #etat.replie #lignes-etat {
+      display: none;
+    }
   </style>
 </head>
 <body>
   <div id="map"></div>
   <div id="halo"></div>
-  <div id="etat">
-    <div class="ligne"><span class="point attente"></span><span id="etat-carte">Carte : chargement…</span></div>
-    <div class="ligne"><span class="point attente"></span><span id="etat-gps">GPS : en attente…</span></div>
-    <div class="ligne"><span class="point attente"></span><span id="etat-osm">Base bâtiments : en attente…</span></div>
-    <div class="ligne"><span class="point attente"></span><span id="etat-points">Points : en attente GPS…</span></div>
-    <div class="ligne"><span class="point attente"></span><span id="etat-distance">Distance : 0 m</span></div>
-    <div class="ligne vitesse"><span class="point ok"></span><span id="etat-vitesse">Vitesse : moyen (course à pied) — 12 km/h</span>
+  <div id="etat" class="replie">
+    <button type="button" id="plis-etat">▸ Statut</button>
+    <div id="lignes-etat">
+      <div class="ligne"><span class="point attente"></span><span id="etat-carte">Carte : chargement…</span></div>
+      <div class="ligne"><span class="point attente"></span><span id="etat-gps">GPS : en attente…</span></div>
+      <div class="ligne"><span class="point attente"></span><span id="etat-osm">Base bâtiments : en attente…</span></div>
+      <div class="ligne"><span class="point attente"></span><span id="etat-points">Points : en attente GPS…</span></div>
+      <div class="ligne"><span class="point attente"></span><span id="etat-version">Version : vérification…</span></div>
+    </div>
+  </div>
+  <div id="releves">
+    <div class="ligne"><span class="point attente"></span><span id="etat-distance">Distance : en attente d'un fix GPS précis…</span></div>
+    <div class="ligne vitesse"><span class="point ok"></span><span id="etat-vitesse">Vitesse : moyen (course à pied) — 10 km/h</span>
       <input type="range" id="choix-vitesse" min="1" max="3" step="1" value="2" aria-label="Vitesse des points rouges">
     </div>
-    <div class="ligne"><span class="point attente"></span><span id="etat-version">Version : vérification…</span></div>
   </div>
   <div id="message">En attente de votre position…<br>Veuillez autoriser la géolocalisation.</div>
 
@@ -1215,9 +1258,11 @@
     const TRACE_DUREE_PLEIN_MS = 30000;  // Affichage intégral du segment : 30 s
     const TRACE_DUREE_FONDU_MS = 30000;  // Puis fondu linéaire : 30 s
     const TRACE_PAS_MIN_M = 1;           // Aucun segment si on ne bouge pas
+    const GPS_PRECISION_MAX_M = 20;      // Podomètre armé si la précision GPS passe sous ce seuil
     let pointsTrace = [];                // {lat, lng, tms} des derniers passages
     let segmentsTrace = [];              // {trajet (L.polyline), tms} affichés
     let distanceParcourue = 0;           // Podomètre : distance totale moyenne (m)
+    let podometreArme = false;           // Ne compte qu'à partir d'un fix GPS précis
 
     /**
      * Formate la distance parcourue : mètres sous 1 km, kilomètres au-delà.
@@ -1239,7 +1284,13 @@
           distanceMetres(dernier.lat, dernier.lng, lat, lng) >= TRACE_PAS_MIN_M) {
         if (dernier) {
           const pas = distanceMetres(dernier.lat, dernier.lng, lat, lng);
-          if (pas >= TRACE_PAS_MIN_M) {
+          // Podomètre : armé dès qu'on reçoit une précision GPS correcte,
+          // puis il compte tout déplacement d'au moins 1 m.
+          if (!podometreArme && dernierePosition && dernierePosition.coords &&
+              (dernierePosition.coords.accuracy || 999) <= GPS_PRECISION_MAX_M) {
+            podometreArme = true;
+          }
+          if (podometreArme && pas >= TRACE_PAS_MIN_M) {
             distanceParcourue += pas;
             majEtat("distance", "ok",
                     "Distance : " + texteDistance(distanceParcourue));
@@ -1501,6 +1552,14 @@
         majLibelleVitesse(niveau);
       });
     }
+
+    // --- Encart statut : repliable (replié par défaut au chargement) ---
+    const encartEtats = document.getElementById("etat");
+    const plisEtat = document.getElementById("plis-etat");
+    plisEtat.addEventListener("click", () => {
+      const replie = encartEtats.classList.toggle("replie");
+      plisEtat.textContent = replie ? "▸ Statut" : "▾ Statut";
+    });
 
     // --- Suivi GPS : on garde la dernière position, l'affichage est actualisé chaque seconde ---
     if ("geolocation" in navigator) {
