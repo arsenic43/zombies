@@ -130,7 +130,7 @@
     const NB_VAGUE_MIN = 1;          // Vague horaire : tirage entre…
     const NB_VAGUE_MAX = 10;         // …1 et 10 points ajoutés chaque minute
     const INTERVALLE_VAGUE_MS = 60000; // Période des vagues : 1 minute
-    const NB_POINTS_TOTAL_MAX = 15;  // Plafond : jamais plus de 15 points en même temps
+    const NB_POINTS_TOTAL_MAX = 12;  // Plafond : jamais plus de 12 points en même temps
     let vagueProgrammee = false;     // L'intervalle des vagues n'est lancé qu'une fois
     const INTERVALLE_MS = 1000;      // Actualisation toutes les secondes
 
@@ -1155,7 +1155,6 @@
     // --- Halo rouge des bords de la carte ---
     const SEUIL_HALO_M = 50;             // Le halo apparaît quand un point entre dans ce disque
     const calqueHalo = document.getElementById("halo");
-
     /**
      * Progression du halo : 0 à 50 m (entrée du point dans le disque) il
      * s'effleure, puis il s'assombrit linéairement jusqu'au rattrapage.
@@ -1170,6 +1169,58 @@
       const progression = plusProche >= SEUIL_HALO_M ? 0 :
         Math.max(0, Math.min(1, 1 - plusProche / SEUIL_HALO_M));
       calqueHalo.style.opacity = progression.toFixed(3);
+    }
+
+    // --- Tracé de passage (traînée derrière le marqueur bleu) ---
+    // Chaque segment reste à opacité maximale pendant 30 s, puis s'efface
+    // linéairement sur 30 s supplémentaires avant de disparaître de la carte.
+    const TRACE_DUREE_PLEIN_MS = 30000;  // Affichage intégral du segment : 30 s
+    const TRACE_DUREE_FONDU_MS = 30000;  // Puis fondu linéaire : 30 s
+    const TRACE_PAS_MIN_M = 1;           // Aucun segment si on ne bouge pas
+    let pointsTrace = [];                // {lat, lng, tms} des derniers passages
+    let segmentsTrace = [];              // {trajet (L.polyline), tms} affichés
+
+    /**
+     * Ajoute, si je me suis déplacé (≥ 1 m), un segment de traînée depuis la
+     * dernière position enregistrée ; recalcule l'opacité de chaque segment
+     * (plein 30 s → fondu linéaire 30 s → suppression) et purge les vieux.
+     */
+    function majTrace(lat, lng, maintenant) {
+      const dernier = pointsTrace[pointsTrace.length - 1];
+      if (!dernier ||
+          distanceMetres(dernier.lat, dernier.lng, lat, lng) >= TRACE_PAS_MIN_M) {
+        if (dernier) {
+          segmentsTrace.push({
+            trajet: L.polyline([[dernier.lat, dernier.lng], [lat, lng]], {
+              color: "#2a81cb",      // même bleu que le marqueur de position
+              weight: 4,
+              lineCap: "round",
+              opacity: 1
+            }).addTo(map),
+            tms: dernier.tms
+          });
+        }
+        pointsTrace.push({ lat: lat, lng: lng, tms: maintenant });
+      }
+      const restants = [];
+      for (const seg of segmentsTrace) {
+        const age = maintenant - seg.tms;
+        let opacite;
+        if (age <= TRACE_DUREE_PLEIN_MS) {
+          opacite = 1.0;                                   // affichage total
+        } else {
+          opacite = 1 - (age - TRACE_DUREE_PLEIN_MS) / TRACE_DUREE_FONDU_MS; // fondu linéaire
+        }
+        if (opacite <= 0) {
+          map.removeLayer(seg.trajet);
+          continue;
+        }
+        seg.trajet.setStyle({ opacity: Math.max(0, opacite) });
+        restants.push(seg);
+      }
+      segmentsTrace = restants;
+      const vieMax = TRACE_DUREE_PLEIN_MS + TRACE_DUREE_FONDU_MS;
+      pointsTrace = pointsTrace.filter(p => maintenant - p.tms < vieMax);
     }
 
     /**
@@ -1290,7 +1341,8 @@
         await avancerPoint(point, lat, lng);
       }
 
-      // Halo rouge des bords + alerte vocale selon la distance du point le plus proche
+      // Tracé de passage, halo rouge des bords + alerte vocale selon la distance du point le plus proche
+      majTrace(lat, lng, Date.now());
       majHalo(lat, lng);
       verifierAnnonces(lat, lng);
     }
