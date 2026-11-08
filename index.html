@@ -1104,6 +1104,7 @@
     function revaliderPoints(lat, lng) {
       for (const point of pointsRouges) {
         if (estSurObstacle(point.lat, point.lng)) {
+          point.segmentEnCours = null; // téléportation : aucun segment à prolonger
           const p = pointLibreAleatoire(lat, lng);
           point.lat = p.lat;
           point.lng = p.lng;
@@ -1204,22 +1205,27 @@
       point.anim = null;
       const depart = point.marker.getLatLng();
       if (distanceMetres(depart.lat, depart.lng, latC, lngC) > TRACE_ZOMBIE_PAS_MAX_M) {
+        point.segmentEnCours = null;
         point.marker.setLatLng([latC, lngC]); // téléportation : apparition immédiate
         return;
       }
+      const segment = point.segmentEnCours;
       const t0 = performance.now();
       point.anim = setInterval(() => {
         const avancement = Math.min(1, (performance.now() - t0) / INTERVALLE_MS);
+        const la = depart.lat + (latC - depart.lat) * avancement;
+        const ln = depart.lng + (lngC - depart.lng) * avancement;
+        point.marker.setLatLng([la, ln]);
+        // La trace ne mord jamais sur le prochain pas : son extrémité
+        // suit le glissement du marqueur, tic après tic.
+        if (segment) {
+          segment.trajet.setLatLngs([segment.depart, [la, ln]]);
+        }
         if (avancement >= 1) {
-          point.marker.setLatLng([latC, lngC]);
           clearInterval(point.anim);
           point.anim = null;
-          return;
+          point.segmentEnCours = null; // segment arrivé à terme
         }
-        point.marker.setLatLng([
-          depart.lat + (latC - depart.lat) * avancement,
-          depart.lng + (lngC - depart.lng) * avancement
-        ]);
       }, 50);
     }
 
@@ -1344,14 +1350,21 @@
       const maintenant = Date.now();
       const pas = distanceMetres(point.lat, point.lng, la, ln);
       if (pas > 0 && pas <= TRACE_ZOMBIE_PAS_MAX_M) {
-        point.trais.push({
+        const seg = {
           trajet: L.polyline([[point.lat, point.lng], [la, ln]], {
             color: "#cc0000",
             weight: 2,
             opacity: 1
           }).addTo(map),
-          tms: maintenant
-        });
+          tms: maintenant,
+          depart: [point.lat, point.lng]
+        };
+        point.trais.push(seg);
+        // Le segment suit le glissement du marqueur (voir animerZombie),
+        // sans jamais dépasser la position du rond rouge.
+        point.segmentEnCours = seg;
+      } else {
+        point.segmentEnCours = null;
       }
       const restants = [];
       for (const seg of point.trais) {
