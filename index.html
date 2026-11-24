@@ -184,7 +184,8 @@
 
     // --- Maillage pour le contournement des obstacles ---
     const COTE_CELLULE = 2;          // Taille d'une cellule du maillage : 2 m
-    const DEMI_MAILLAGE = 75;        // 151 x 151 cellules = 302 m x 302 m : couvre le rayon d'apparition de 150 m
+    const DEMI_MAILLAGE = 90;        // 181 x 181 cellules = 362 m x 362 m : couvre le rayon
+                                     // d'apparition (150 m) + la marge de recentrage (15 m)
     const NB_COTES = 2 * DEMI_MAILLAGE + 1;
     const RACINE2 = Math.SQRT2;
     const DEPLACEMENTS = [           // [dLigne, dColonne, coût] — 8 directions
@@ -351,7 +352,7 @@
      */
     function pointLibreAleatoire(lat, lng) {
       let proposition = pointAleatoire(lat, lng, RAYON_METRES, RAYON_APPARITION_MIN_M);
-      for (let essai = 0; essai < 20; essai++) {
+      for (let essai = 0; essai < 40; essai++) {
         proposition = pointAleatoire(lat, lng, RAYON_METRES, RAYON_APPARITION_MIN_M);
         if (!estSurObstacle(proposition.lat, proposition.lng)) break;
       }
@@ -545,7 +546,7 @@
 
     /**
      * Déplacement à l'intérieur de la zone chargée : rien à télécharger, seul
-     * le maillage suit (à partir de 25 m de déplacement).
+     * le maillage suit (à partir de 15 m de déplacement).
      * Renvoie true si la position est toujours couverte.
      */
     function suivreDeplacement(lat, lng) {
@@ -555,7 +556,7 @@
         return false;
       }
       if (!centreGeometrie ||
-          distanceMetres(centreGeometrie.lat, centreGeometrie.lng, lat, lng) >= 25) {
+          distanceMetres(centreGeometrie.lat, centreGeometrie.lng, lat, lng) >= 15) {
         recentrerGeometrie(lat, lng);
       }
       return true;
@@ -943,7 +944,15 @@
     function chercherChemin(latDep, lngDep, latArr, lngArr) {
       if (!maillage) return null;
       const dep = indiceDe(latDep, lngDep);
-      const arr = indiceDe(latArr, lngArr);
+      let arr = indiceDe(latArr, lngArr);
+      // Le joueur peut se trouver dans la marge de sécurité d'un mur : sa
+      // cellule est alors obstruée et, si ses voisines le sont aussi, aucun
+      // chemin n'aboutit. On vise alors la cellule libre la plus proche ;
+      // le dernier tronçon (vers la position exacte) est traité plus loin.
+      if (maillage.obstruees[arr.i * NB_COTES + arr.j] === 1) {
+        const libre = celluleLibreProche(arr.i, arr.j, 4);
+        if (libre) arr = libre;
+      }
       if (dep.i === arr.i && dep.j === arr.j) {
         return [[latArr, lngArr]];
       }
@@ -1005,6 +1014,24 @@
     }
 
     /**
+     * Cellule libre la plus proche d'une cellule donnée (contour des couronnes
+     * de 1 à `rayonMax` cellules). Renvoie {i, j} ou null.
+     */
+    function celluleLibreProche(i0, j0, rayonMax) {
+      for (let r = 1; r <= rayonMax; r++) {
+        for (let di = -r; di <= r; di++) {
+          for (let dj = -r; dj <= r; dj++) {
+            if (Math.abs(di) !== r && Math.abs(dj) !== r) continue;
+            const i = i0 + di, j = j0 + dj;
+            if (i < 0 || j < 0 || i >= NB_COTES || j >= NB_COTES) continue;
+            if (maillage.obstruees[i * NB_COTES + j] === 0) return { i: i, j: j };
+          }
+        }
+      }
+      return null;
+    }
+
+    /**
      * La ligne droite entre deux points est-elle dégagée d'obstacles ?
      */
     function ligneLibre(lat1, lng1, lat2, lng2) {
@@ -1027,13 +1054,18 @@
       const resultat = [];
       let la = latDep, ln = lngDep, idx = 0;
       while (idx < chemin.length) {
-        let lointain = idx;
-        for (let k = chemin.length - 1; k > idx; k--) {
+        let lointain = -1;
+        for (let k = chemin.length - 1; k >= idx; k--) {
           if (ligneLibre(la, ln, chemin[k][0], chemin[k][1])) {
             lointain = k;
             break;
           }
         }
+        // Aucun point du chemin n'est visible depuis la position réelle
+        // (départ hors maillage, ou derrière un mur) : on s'arrête là plutôt
+        // que de foncer sur la première cellule, ce qui ferait traverser
+        // l'obstacle et piégerait le zombie à l'intérieur.
+        if (lointain < 0) break;
         resultat.push(chemin[lointain]);
         la = chemin[lointain][0];
         ln = chemin[lointain][1];
@@ -1114,18 +1146,80 @@
     }
 
     /**
-     * Déplace un point vers la position à la vitesse de 5 km/h, en contournant
+     * La cellule du maillage contenant ce point est-elle obstruée ?
+     * Hors maillage, on répond false : la cellule serait rognée, le test
+     * n'aurait pas de sens.
+     */
+    function celluleObstruee(lat, lng) {
+      if (!maillage) return false;
+      const fi = (lat - maillage.lat0) / maillage.pasLat + DEMI_MAILLAGE;
+      const fj = (lng - maillage.lng0) / maillage.pasLng + DEMI_MAILLAGE;
+      if (fi < 0 || fj < 0 || fi > NB_COTES - 1 || fj > NB_COTES - 1) return false;
+      return maillage.obstruees[Math.round(fi) * NB_COTES + Math.round(fj)] === 1;
+    }
+
+    /**
+     * Dégage un point piégé. Deux cas :
+     * - `sortieLocale` : le point est dans un bâtiment ou un plan d'eau ; on
+     *   cherche la position libre la plus proche en couronnes de 1 à 12 m et
+     *   on l'y place (la première passe ne retient que les positions
+     *   accessibles sans traverser de mur).
+     * - sinon (poche fermée, aucun chemin vers moi) : aucune sortie locale
+     *   n'existe, le point réapparaît dans l'anneau d'apparition.
+     * Aucune traînée n'est laissée : c'est une téléportation de secours.
+     */
+    function degagerPoint(point, latCible, lngCible, sortieLocale) {
+      if (point.anim) { clearInterval(point.anim); point.anim = null; }
+      if (sortieLocale) {
+        const pasLat = 1 / 111320;
+        const pasLng = 1 / (111320 * Math.cos(point.lat * Math.PI / 180));
+        for (let passe = 0; passe < 2; passe++) {
+          for (let rayon = 1; rayon <= 12; rayon++) {
+            for (let a = 0; a < 16; a++) {
+              const angle = a * Math.PI / 8;
+              const cLat = point.lat + rayon * Math.sin(angle) * pasLat;
+              const cLng = point.lng + rayon * Math.cos(angle) * pasLng;
+              if (estSurObstacle(cLat, cLng) || celluleObstruee(cLat, cLng)) continue;
+              if (passe === 0 && !ligneLibre(point.lat, point.lng, cLat, cLng)) continue;
+              point.segmentEnCours = null;
+              point.lat = cLat;
+              point.lng = cLng;
+              point.marker.setLatLng([cLat, cLng]);
+              return;
+            }
+          }
+        }
+      }
+      point.segmentEnCours = null;
+      const p = pointLibreAleatoire(latCible, lngCible);
+      point.lat = p.lat;
+      point.lng = p.lng;
+      point.marker.setLatLng([p.lat, p.lng]);
+    }
+
+    /**
+     * Déplace un point vers la position à la vitesse réglée, en contournant
      * les bâtiments et l'eau grâce à A*. Si le point atteint ma position, il
      * est replacé aléatoirement (hors obstacles).
      */
     async function avancerPoint(point, latCible, lngCible) {
       const avance = vitesseMS * (INTERVALLE_MS / 1000); // Distance parcourue en 1 s
 
+      // Un point qui se retrouve dans un bâtiment ou un plan d'eau (données
+      // arrivées après sa création, mur franchi, maillage resserré) n'a plus
+      // aucune cellule de départ libre : A* ne trouverait aucun chemin et le
+      // zombie resterait figé. On le dégage avant tout calcul.
+      if (geometrieDisponible && estSurObstacle(point.lat, point.lng)) {
+        degagerPoint(point, latCible, lngCible, true);
+        return;
+      }
+
       // Recalcul du chemin à chaque seconde (la cible bouge)
       let chemin = null;
       if (maillage) {
         const brut = chercherChemin(point.lat, point.lng, latCible, lngCible);
         if (brut) chemin = lisserChemin(brut, point.lat, point.lng);
+        if (chemin && !chemin.length) chemin = null;
       }
 
       let la = point.lat, ln = point.lng;
@@ -1155,14 +1249,22 @@
           ln += (lngCible - ln) * t;
         }
       } else if (distanceMetres(la, ln, latCible, lngCible) > 0) {
-        // Pas de maillage / pas de chemin : marche directe si le point est libre
+        // Pas de maillage ou aucun chemin exploitable (poche fermée, cible
+        // dans une marge de mur…) : marche directe si le trajet est dégagé.
+        // On teste tout le segment, pas seulement son extrémité : un pas de
+        // 4 m peut franchir une cloison fine.
         const dTotal = distanceMetres(la, ln, latCible, lngCible);
         const t = Math.min(1, avance / dTotal);
         const laN = la + (latCible - la) * t;
         const lnN = ln + (lngCible - ln) * t;
-        if (dTotal <= avance || !estSurObstacle(laN, lnN)) {
+        if (dTotal <= avance || ligneLibre(la, ln, laN, lnN)) {
           la = laN;
           ln = lnN;
+        } else if (maillage) {
+          // Aucun chemin et la ligne directe est coupée : le point est
+          // réellement enfermé. On le dégage plutôt que de le laisser figé.
+          degagerPoint(point, latCible, lngCible, false);
+          return;
         }
       }
 
