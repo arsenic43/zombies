@@ -209,7 +209,7 @@
       <input type="range" id="choix-vitesse" min="1" max="3" step="1" value="2" aria-label="Vitesse des points rouges">
     </div>
     <div class="ligne tir">
-      <button type="button" id="bouton-tir" aria-label="Tirer une balle sur le zombie le plus proche">
+      <button type="button" id="bouton-tir" aria-label="Tirer une balle sur le zombie le plus proche, à moins de 50 m et sans obstacle entre">
         Tirer · <span id="stock-munitions">5</span>
       </button>
     </div>
@@ -243,7 +243,7 @@
     const MUNITIONS_RAYON_MIN_M = 40;   // Distance d'apparition minimale
     const MUNITIONS_RAYON_MAX_M = 140;  // Distance d'apparition maximale
     const RAMASSAGE_M = 10;             // Ramassage automatique à cette distance
-    const PORTEE_TIR_M = 150;           // Portée du tir (tout le terrain de jeu)
+    const PORTEE_TIR_M = 50;            // Portée du tir : au-delà, le zombie n'est pas tuable
     const DEGAGEMENT_MUNITION_M = 4;    // Disque libre exigé autour d'une caisse (pas collée à un mur)
     const CORRIDOR_MUNITION_M = 12;     // Couloir libre (rue) exigé dans un axe
 
@@ -1374,8 +1374,10 @@
     }
 
     /**
-     * Tir : chaque appui consomme une balle et abat le zombie le plus proche
-     * dans la portée. Sans cible, la balle est perdue (comme un vrai tir).
+     * Tir : chaque appui consomme une balle. Le tir n'est valide que si le
+     * zombie est à moins de 50 m ET si aucun bâtiment (ou plan d'eau) ne se
+     * trouve entre lui et moi. Sinon la balle est perdue et le zombie survit.
+     * La cible est le zombie le plus proche remplissant ces deux conditions.
      */
     function tirer() {
       const bouton = document.getElementById("bouton-tir");
@@ -1390,17 +1392,24 @@
       if (!dernierePosition) return;
       const lat = dernierePosition.coords.latitude;
       const lng = dernierePosition.coords.longitude;
-      let cible = null, meilleure = Infinity;
+      let cible = null, meilleure = Infinity, bloque = false, horsPortee = false;
       for (const point of pointsRouges) {
         const d = distanceMetres(lat, lng, point.lat, point.lng);
-        if (d <= PORTEE_TIR_M && d < meilleure) { meilleure = d; cible = point; }
+        if (d >= PORTEE_TIR_M) { horsPortee = true; continue; }
+        // Ligne de vue : un bâtiment ou un plan d'eau coupe le tir.
+        if (!ligneLibre(lat, lng, point.lat, point.lng)) { bloque = true; continue; }
+        if (d < meilleure) { meilleure = d; cible = point; }
       }
       stockMunitions--;
       majMunitionsEtat();
       if (cible) {
         abattreZombie(cible);
       } else {
-        majEtat("points", "attente", "Points : aucun zombie à portée");
+        majEtat("points", "attente", bloque
+          ? "Points : un bâtiment bloque le tir (balle perdue)"
+          : (horsPortee
+              ? "Points : aucun zombie à moins de 50 m (balle perdue)"
+              : "Points : aucun zombie à portée (balle perdue)"));
         if (bouton) {
           bouton.classList.remove("rate");
           void bouton.offsetWidth;
