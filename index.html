@@ -76,6 +76,8 @@
       color: #333;
       pointer-events: none;
       box-shadow: 0 1px 4px rgba(0, 0, 0, 0.15);
+      max-width: min(360px, calc(100% - 140px));
+      box-sizing: border-box;
     }
     .point {
       display: inline-block;
@@ -94,18 +96,23 @@
     .point.echec {
       background: #d32f2f;
     }
-    /* Ligne du curseur de vitesse : le panneau est en pointer-events none,
-       le curseur doit rester manipulable */
+    /* Ligne du curseur de vitesse (dans l'encart statut) : le panneau est en
+       pointer-events none, le curseur doit rester manipulable */
+    .ligne.vitesse {
+      margin-top: 5px;
+      padding-top: 4px;
+      border-top: 1px solid rgba(0, 0, 0, 0.12);
+    }
     .ligne.vitesse input[type="range"] {
       pointer-events: auto;
       width: 100%;
       margin: 3px 0 0;
       accent-color: #d32f2f;
     }
-    /* Encart relevés (bas-gauche) : podomètre + curseur de vitesse */
+    /* Encart relevés (bas-gauche) : podomètre, au-dessus de la barre de tir */
     #releves {
       position: absolute;
-      bottom: 8px;
+      bottom: calc(62px + env(safe-area-inset-bottom, 0px));
       left: 8px;
       z-index: 1000;
       background: rgba(255, 255, 255, 0.88);
@@ -140,18 +147,28 @@
     #etat.replie #lignes-etat {
       display: none;
     }
-    /* Bouton de tir (une balle du stock par appui) et obus des munitions */
-    .ligne.tir {
-      margin-top: 6px;
+    /* Barre de tir pleine largeur, collée en bas de l'écran */
+    #barre-tir {
+      position: absolute;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      z-index: 1100;
+      background: #d4a017;
+      pointer-events: auto;
+      padding-bottom: env(safe-area-inset-bottom, 0px);
+      box-shadow: 0 -1px 5px rgba(0, 0, 0, 0.25);
     }
     #bouton-tir {
-      pointer-events: auto;
       width: 100%;
-      border: 1px solid #7a5c00;
-      border-radius: 5px;
+      min-height: 54px;
+      border: none;
+      border-top: 1px solid #7a5c00;
+      border-radius: 0;
       background: linear-gradient(#ffe08a, #d4a017);
       color: #3a2b00;
       font: inherit;
+      font-size: 15px;
       font-weight: bold;
       padding: 6px 8px;
       cursor: pointer;
@@ -159,6 +176,10 @@
       align-items: center;
       justify-content: center;
       gap: 6px;
+    }
+    /* La mention légale Leaflet reste visible au-dessus de la barre */
+    .leaflet-bottom.leaflet-right {
+      bottom: calc(55px + env(safe-area-inset-bottom, 0px));
     }
     #bouton-tir:active {
       transform: translateY(1px);
@@ -202,17 +223,17 @@
       <div class="ligne"><span class="point attente"></span><span id="etat-munitions">Munitions : en attente…</span></div>
       <div class="ligne"><span class="point attente"></span><span id="etat-version">Version : vérification…</span></div>
     </div>
-  </div>
-  <div id="releves">
-    <div class="ligne"><span class="point attente"></span><span id="etat-distance">Distance : en attente d'un fix GPS précis…</span></div>
     <div class="ligne vitesse"><span class="point ok"></span><span id="etat-vitesse">Vitesse : moyen (course à pied) — 10 km/h</span>
       <input type="range" id="choix-vitesse" min="1" max="3" step="1" value="2" aria-label="Vitesse des points rouges">
     </div>
-    <div class="ligne tir">
-      <button type="button" id="bouton-tir" aria-label="Tirer une balle sur le zombie le plus proche, à moins de 50 m et sans obstacle entre">
-        Tirer · <span id="stock-munitions">5</span>
-      </button>
-    </div>
+  </div>
+  <div id="releves">
+    <div class="ligne"><span class="point attente"></span><span id="etat-distance">Distance : en attente d'un fix GPS précis…</span></div>
+  </div>
+  <div id="barre-tir">
+    <button type="button" id="bouton-tir" aria-label="Tirer une balle sur le zombie le plus proche, à moins de 50 m et sans obstacle entre">
+      Tirer · <span id="stock-munitions">5</span>
+    </button>
   </div>
   <div id="message">En attente de votre position…<br>Veuillez autoriser la géolocalisation.</div>
 
